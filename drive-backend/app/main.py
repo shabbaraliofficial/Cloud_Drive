@@ -51,9 +51,9 @@ app.add_middleware(
     secret_key=SESSION_SECRET,
 )
 
-origins = config.CORS_ORIGINS or [
+origins = [
     "http://localhost:5173",
-    "https://your-frontend-domain.com",
+    "https://cloud-drive-u8m3.vercel.app",
 ]
 
 app.add_middleware(
