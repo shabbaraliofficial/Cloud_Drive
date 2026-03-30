@@ -21,28 +21,10 @@ database: AsyncIOMotorDatabase | None = None
 database_error: str | None = "MongoDB is not connected"
 
 
-def _resolve_database_name(resolved_client: AsyncIOMotorClient) -> str:
-    if config.MONGODB_DB_NAME:
-        return config.MONGODB_DB_NAME
-
-    default_database = resolved_client.get_default_database(default=None)
-    if default_database is not None:
-        return default_database.name
-
-    return "cloud_drive_db"
-
-
 async def connect_to_mongo() -> None:
     global client, database, database_error
 
     MONGO_URL = config.MONGO_URL
-
-    if not MONGO_URL:
-        database_error = "MongoDB URL is not configured. Set MONGO_URL on the host."
-        client = None
-        database = None
-        logger.warning(database_error)
-        return
 
     if not MONGO_URL.startswith(("mongodb://", "mongodb+srv://")):
         database_error = "MongoDB URL must be a full MongoDB URI. Set MONGO_URL to a value like mongodb+srv://..."
@@ -53,7 +35,12 @@ async def connect_to_mongo() -> None:
 
     try:
         client = AsyncIOMotorClient(MONGO_URL)
-        database = client[_resolve_database_name(client)]
+        database = client.get_default_database()
+        if database is None:
+            if config.MONGODB_DB_NAME:
+                database = client[config.MONGODB_DB_NAME]
+            else:
+                raise ValueError("MONGO_URL must include a database name or set MONGODB_DB_NAME")
         await database.command("ping")
         database_error = None
         logger.info("MongoDB connected successfully: db=%s", database.name)

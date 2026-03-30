@@ -54,6 +54,7 @@ app.add_middleware(
 origins = [
     "http://localhost:5173",
     "https://cloud-drive-u8m3.vercel.app",
+    "https://cloud-drive-u8m3-p03tncgoo-shabbaraliofficials-projects.vercel.app",
 ]
 
 app.add_middleware(
