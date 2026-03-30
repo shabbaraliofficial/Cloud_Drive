@@ -80,7 +80,7 @@ function Header({
       <div className="mx-auto flex w-full max-w-[1600px] items-center gap-4 px-4 py-3 sm:px-6">
         <button
           type="button"
-          onClick={() => navigate('/dashboard')}
+          onClick={() => navigate('/')}
           className="shrink-0 text-left"
           aria-label="Go to dashboard"
         >

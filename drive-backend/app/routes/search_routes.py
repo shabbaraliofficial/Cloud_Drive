@@ -42,7 +42,9 @@ async def search_all(
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
     in_bin: bool | None = Query(default=None),
+    is_deleted: bool | None = Query(default=None),
     starred: bool | None = Query(default=None),
+    is_starred: bool | None = Query(default=None),
     encrypted: bool | None = Query(default=None),
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
@@ -58,7 +60,8 @@ async def search_all(
     location_filter = build_location_filter(location, "file")
     legacy_date_filter = build_date_range_filter(date_from, date_to, field_name="created_at")
     modified_date_filter = build_date_modified_filter(date_modified or date_alias)
-    deleted_mode = "only" if in_bin is True else "active"
+    deleted_mode = "only" if in_bin is True or is_deleted is True else "active"
+    starred_filter_value = True if starred is True or is_starred is True else None
 
     file_query = await build_accessible_file_query(
         db,
@@ -69,7 +72,7 @@ async def search_all(
         location_filter,
         legacy_date_filter,
         modified_date_filter,
-        build_starred_filter(starred),
+        build_starred_filter(starred_filter_value),
         build_encrypted_filter(encrypted),
         shared_to_filter,
         deleted_mode=deleted_mode,
@@ -90,7 +93,7 @@ async def search_all(
             build_location_filter(location, "folder"),
             legacy_date_filter,
             modified_date_filter,
-            build_starred_filter(starred),
+            build_starred_filter(starred_filter_value),
             shared_to_filter,
             deleted_mode=deleted_mode,
         )

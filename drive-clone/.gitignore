@@ -23,5 +23,5 @@ dist-ssr
 *.sln
 *.sw?
 .env
-drive-frontend/.env
+drive-clone/.env
 drive-backend/.env

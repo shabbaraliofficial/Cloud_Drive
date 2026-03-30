@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse as FastAPIFileResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
+from pymongo.errors import PyMongoError
 from starlette.background import BackgroundTask
 
 import app.config as config
@@ -362,7 +363,6 @@ async def upload_file(
         )
         s3_key = s3_service.extract_key(file_url) if s3_service.enabled else None
     except Exception as exc:
-        print(f"S3 upload route error: {exc}")
         logger.exception(
             "Upload to storage failed: filename=%s user_id=%s",
             file.filename,
@@ -377,19 +377,26 @@ async def upload_file(
         owner_id=str(current_user["_id"]),
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
-    doc = await _create_or_version_file(
-        db,
-        filename=file.filename or "unnamed",
-        mime_type=file.content_type or "application/octet-stream",
-        file_size=file_size,
-        owner_id=current_user["_id"],
-        folder_id=parsed_folder_id,
-        file_url=file_url,
-        thumbnail_url=thumbnail_url,
-        s3_key=s3_key,
-    )
-    await _recalc_storage(db, current_user["_id"])
-    await _log_activity(db, current_user["_id"], "upload", doc["_id"], {"source": "direct"})
+    try:
+        doc = await _create_or_version_file(
+            db,
+            filename=file.filename or "unnamed",
+            mime_type=file.content_type or "application/octet-stream",
+            file_size=file_size,
+            owner_id=current_user["_id"],
+            folder_id=parsed_folder_id,
+            file_url=file_url,
+            thumbnail_url=thumbnail_url,
+            s3_key=s3_key,
+        )
+        await _recalc_storage(db, current_user["_id"])
+        await _log_activity(db, current_user["_id"], "upload", doc["_id"], {"source": "direct"})
+    except PyMongoError as exc:
+        logger.exception("Failed to persist uploaded file metadata: filename=%s user_id=%s", file.filename, current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="File uploaded but metadata could not be saved",
+        ) from exc
     logger.info(
         "Upload completed: file_id=%s url=%s size_bytes=%s storage_mode=%s",
         doc["_id"],
@@ -418,24 +425,32 @@ async def upload_folder(
     await ensure_storage_capacity(db, current_user, total_size)
 
     now = datetime.utcnow()
-    folder_result = await db.folders.insert_one(
-        {
-            "name": folder_name,
-            "owner_id": current_user["_id"],
-            "parent_folder_id": None,
-            "parent_folder": None,
-            "is_deleted": False,
-            "deleted_at": None,
-            "is_starred": False,
-            "shared_with": [],
-            "share_entries": [],
-            "share_expiry": None,
-            "permission": "write",
-            "expires_at": None,
-            "created_at": now,
-            "updated_at": now,
-        }
-    )
+    try:
+        folder_result = await db.folders.insert_one(
+            {
+                "name": folder_name,
+                "owner_id": current_user["_id"],
+                "parent_folder_id": None,
+                "parent_folder": None,
+                "is_deleted": False,
+                "deleted_at": None,
+                "is_starred": False,
+                "shared_with": [],
+                "share_entries": [],
+                "share_expiry": None,
+                "permission": "write",
+                "expires_at": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    except PyMongoError as exc:
+        logger.exception("Failed to create folder for upload: folder_name=%s user_id=%s", folder_name, current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Folder upload could not be initialized",
+        ) from exc
+
     folder_id = folder_result.inserted_id
     response_items: list[FileResponse] = []
     for upload, content, file_size in validated_uploads:
@@ -457,20 +472,34 @@ async def upload_folder(
             owner_id=str(current_user["_id"]),
             folder_id=str(folder_id),
         )
-        inserted = await _create_or_version_file(
-            db,
-            filename=upload.filename or "unnamed",
-            mime_type=upload.content_type or "application/octet-stream",
-            file_size=file_size,
-            owner_id=current_user["_id"],
-            folder_id=folder_id,
-            file_url=file_url,
-            thumbnail_url=thumbnail_url,
-            s3_key=s3_key,
-        )
-        await _log_activity(db, current_user["_id"], "upload", inserted["_id"], {"source": "folder_upload"})
+        try:
+            inserted = await _create_or_version_file(
+                db,
+                filename=upload.filename or "unnamed",
+                mime_type=upload.content_type or "application/octet-stream",
+                file_size=file_size,
+                owner_id=current_user["_id"],
+                folder_id=folder_id,
+                file_url=file_url,
+                thumbnail_url=thumbnail_url,
+                s3_key=s3_key,
+            )
+            await _log_activity(db, current_user["_id"], "upload", inserted["_id"], {"source": "folder_upload"})
+        except PyMongoError as exc:
+            logger.exception("Failed to persist folder upload metadata: filename=%s user_id=%s", upload.filename, current_user.get("_id"))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="File uploaded but metadata could not be saved",
+            ) from exc
         response_items.append(serialize_file(inserted))
-    await _recalc_storage(db, current_user["_id"])
+    try:
+        await _recalc_storage(db, current_user["_id"])
+    except PyMongoError as exc:
+        logger.exception("Failed to recalculate storage after folder upload: user_id=%s", current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Folder upload completed but storage usage could not be updated",
+        ) from exc
     return response_items
 
 
@@ -547,19 +576,27 @@ async def complete_direct_upload(
         owner_id=str(current_user["_id"]),
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
-    doc = await _create_or_version_file(
-        db,
-        filename=payload.filename or "unnamed",
-        mime_type=payload.mime_type or "application/octet-stream",
-        file_size=max(int(payload.file_size or 0), 0),
-        owner_id=current_user["_id"],
-        folder_id=parsed_folder_id,
-        file_url=file_url,
-        thumbnail_url=thumbnail_url,
-        s3_key=payload.key,
-    )
-    await _recalc_storage(db, current_user["_id"])
-    await _log_activity(db, current_user["_id"], "upload", doc["_id"], {"source": "presigned"})
+    try:
+        doc = await _create_or_version_file(
+            db,
+            filename=payload.filename or "unnamed",
+            mime_type=payload.mime_type or "application/octet-stream",
+            file_size=max(int(payload.file_size or 0), 0),
+            owner_id=current_user["_id"],
+            folder_id=parsed_folder_id,
+            file_url=file_url,
+            thumbnail_url=thumbnail_url,
+            s3_key=payload.key,
+        )
+        await _recalc_storage(db, current_user["_id"])
+        await _log_activity(db, current_user["_id"], "upload", doc["_id"], {"source": "presigned"})
+    except PyMongoError as exc:
+        logger.exception("Failed to persist presigned upload metadata: filename=%s user_id=%s", payload.filename, current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Uploaded file metadata could not be saved",
+        ) from exc
+    logger.info("Presigned upload completed: user_id=%s key=%s", current_user.get("_id"), payload.key)
     return serialize_file(doc)
 
 
@@ -583,29 +620,37 @@ async def start_multipart_upload(
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
 
-    await db.uploads.update_one(
-        {"upload_id": data["upload_id"], "user_id": current_user["_id"]},
-        {
-            "$set": {
-                "file_name": payload.filename,
-                "key": data["key"],
-                "file_url": data["file_url"],
-                "mime_type": payload.content_type or "application/octet-stream",
-                "folder_id": parsed_folder_id,
-                "file_size": max(int(payload.file_size or 0), 0),
-                "total_parts": max(int(payload.total_parts or 0), 0),
-                "status": "in_progress",
-                "updated_at": datetime.utcnow(),
+    try:
+        await db.uploads.update_one(
+            {"upload_id": data["upload_id"], "user_id": current_user["_id"]},
+            {
+                "$set": {
+                    "file_name": payload.filename,
+                    "key": data["key"],
+                    "file_url": data["file_url"],
+                    "mime_type": payload.content_type or "application/octet-stream",
+                    "folder_id": parsed_folder_id,
+                    "file_size": max(int(payload.file_size or 0), 0),
+                    "total_parts": max(int(payload.total_parts or 0), 0),
+                    "status": "in_progress",
+                    "updated_at": datetime.utcnow(),
+                },
+                "$setOnInsert": {
+                    "upload_id": data["upload_id"],
+                    "uploaded_parts": [],
+                    "user_id": current_user["_id"],
+                    "created_at": datetime.utcnow(),
+                },
             },
-            "$setOnInsert": {
-                "upload_id": data["upload_id"],
-                "uploaded_parts": [],
-                "user_id": current_user["_id"],
-                "created_at": datetime.utcnow(),
-            },
-        },
-        upsert=True,
-    )
+            upsert=True,
+        )
+    except PyMongoError as exc:
+        logger.exception("Failed to persist multipart upload session: user_id=%s upload_id=%s", current_user.get("_id"), data.get("upload_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Multipart upload session could not be saved",
+        ) from exc
+    logger.info("Multipart upload started: user_id=%s upload_id=%s key=%s", current_user.get("_id"), data.get("upload_id"), data.get("key"))
     return data
 
 
@@ -665,10 +710,17 @@ async def multipart_ack_part(
     uploaded_parts.append({"PartNumber": payload.part_number, "ETag": payload.etag})
     uploaded_parts.sort(key=lambda item: int(item["PartNumber"]))
 
-    await db.uploads.update_one(
-        {"upload_id": payload.upload_id, "user_id": current_user["_id"]},
-        {"$set": {"uploaded_parts": uploaded_parts, "updated_at": datetime.utcnow()}},
-    )
+    try:
+        await db.uploads.update_one(
+            {"upload_id": payload.upload_id, "user_id": current_user["_id"]},
+            {"$set": {"uploaded_parts": uploaded_parts, "updated_at": datetime.utcnow()}},
+        )
+    except PyMongoError as exc:
+        logger.exception("Failed to persist multipart upload progress: user_id=%s upload_id=%s", current_user.get("_id"), payload.upload_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Multipart upload progress could not be saved",
+        ) from exc
     return {"upload_id": payload.upload_id, "uploaded_parts": uploaded_parts}
 
 
@@ -705,23 +757,31 @@ async def complete_multipart_upload(
         owner_id=str(current_user["_id"]),
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
-    file_doc = await _create_or_version_file(
-        db,
-        filename=payload.filename or doc.get("file_name") or "unnamed",
-        mime_type=payload.mime_type or doc.get("mime_type") or "application/octet-stream",
-        file_size=final_size,
-        owner_id=current_user["_id"],
-        folder_id=parsed_folder_id,
-        file_url=file_url,
-        thumbnail_url=thumbnail_url,
-        s3_key=payload.key,
-    )
-    await db.uploads.update_one(
-        {"upload_id": payload.upload_id, "user_id": current_user["_id"]},
-        {"$set": {"status": "completed", "updated_at": datetime.utcnow()}},
-    )
-    await _recalc_storage(db, current_user["_id"])
-    await _log_activity(db, current_user["_id"], "upload", file_doc["_id"], {"source": "multipart"})
+    try:
+        file_doc = await _create_or_version_file(
+            db,
+            filename=payload.filename or doc.get("file_name") or "unnamed",
+            mime_type=payload.mime_type or doc.get("mime_type") or "application/octet-stream",
+            file_size=final_size,
+            owner_id=current_user["_id"],
+            folder_id=parsed_folder_id,
+            file_url=file_url,
+            thumbnail_url=thumbnail_url,
+            s3_key=payload.key,
+        )
+        await db.uploads.update_one(
+            {"upload_id": payload.upload_id, "user_id": current_user["_id"]},
+            {"$set": {"status": "completed", "updated_at": datetime.utcnow()}},
+        )
+        await _recalc_storage(db, current_user["_id"])
+        await _log_activity(db, current_user["_id"], "upload", file_doc["_id"], {"source": "multipart"})
+    except PyMongoError as exc:
+        logger.exception("Failed to finalize multipart upload metadata: user_id=%s upload_id=%s", current_user.get("_id"), payload.upload_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Multipart upload finished but metadata could not be saved",
+        ) from exc
+    logger.info("Multipart upload completed: user_id=%s upload_id=%s key=%s", current_user.get("_id"), payload.upload_id, payload.key)
     return serialize_file(file_doc)
 
 

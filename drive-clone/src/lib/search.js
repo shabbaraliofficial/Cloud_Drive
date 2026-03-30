@@ -1,6 +1,5 @@
 export const DEFAULT_ADVANCED_SEARCH_FILTERS = Object.freeze({
   includesWords: '',
-  sharedTo: '',
   type: 'any',
   owner: 'anyone',
   location: 'anywhere',
@@ -33,7 +32,6 @@ export function hasAdvancedSearchFilters(filters = {}) {
   const normalized = createAdvancedSearchFilters(filters)
   return Boolean(
     normalized.includesWords.trim()
-      || normalized.sharedTo.trim()
       || normalized.type !== 'any'
       || normalized.owner !== 'anyone'
       || normalized.location !== 'anywhere'
@@ -51,13 +49,12 @@ export function buildSearchRequestParams(searchValue = '', filters = {}) {
 
   if (trimmedName) params.name = trimmedName
   if (normalized.includesWords.trim()) params.includes_words = normalized.includesWords.trim()
-  if (normalized.sharedTo.trim()) params.shared_to = normalized.sharedTo.trim()
   if (normalized.type && !['any', 'all'].includes(normalized.type)) params.type = normalized.type
   if (normalized.owner && normalized.owner !== 'anyone') params.owner = normalized.owner
   if (normalized.location && normalized.location !== 'anywhere') params.location = normalized.location
-  if (normalized.dateModified && normalized.dateModified !== 'any_time') params.date_modified = normalized.dateModified
-  if (normalized.inBin) params.in_bin = true
-  if (normalized.starred) params.starred = true
+  if (normalized.dateModified && normalized.dateModified !== 'any_time') params.date = normalized.dateModified
+  if (normalized.inBin) params.is_deleted = true
+  if (normalized.starred) params.is_starred = true
   if (normalized.encrypted) params.encrypted = true
 
   return params

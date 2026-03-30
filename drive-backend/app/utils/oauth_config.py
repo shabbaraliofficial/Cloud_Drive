@@ -3,9 +3,6 @@ from __future__ import annotations
 import os
 
 from authlib.integrations.starlette_client import OAuth
-from dotenv import load_dotenv
-
-load_dotenv()
 
 oauth = OAuth()
 

@@ -59,7 +59,9 @@ class S3Service:
         self._log_status()
 
     def _create_session(self):
-        session_kwargs: dict[str, str] = {"region_name": self.region}
+        session_kwargs: dict[str, str] = {}
+        if self.region:
+            session_kwargs["region_name"] = self.region
         if config.AWS_PROFILE:
             session_kwargs["profile_name"] = config.AWS_PROFILE
         elif config.AWS_ACCESS_KEY_ID and config.AWS_SECRET_ACCESS_KEY:
@@ -196,16 +198,16 @@ class S3Service:
                 tmp_out.unlink(missing_ok=True)
 
     def _object_upload_args(self, content_type: str) -> dict[str, str]:
-        extra_args = {"ContentType": content_type}
-        if config.AWS_S3_PUBLIC_READ:
-            extra_args["ACL"] = "public-read"
-        return extra_args
+        return {
+            "ContentType": content_type,
+            "ACL": "public-read",
+        }
 
     def _multipart_upload_args(self, content_type: str) -> dict[str, str]:
-        args = {"ContentType": content_type}
-        if config.AWS_S3_PUBLIC_READ:
-            args["ACL"] = "public-read"
-        return args
+        return {
+            "ContentType": content_type,
+            "ACL": "public-read",
+        }
 
     def _format_s3_error(self, exc: Exception, operation: str = "S3 operation") -> str:
         if isinstance(exc, ClientError):
@@ -213,10 +215,10 @@ class S3Service:
             code = error.get("Code", "Unknown")
             message = error.get("Message", str(exc))
             if code == "AccessDenied":
-                if operation == "PutObject" and config.AWS_S3_PUBLIC_READ:
+                if operation == "PutObject":
                     return (
                         "S3 AccessDenied during PutObject. Your bucket or IAM policy likely rejects ACL=public-read. "
-                        "Set AWS_S3_PUBLIC_READ=false or allow s3:PutObjectAcl."
+                        "Allow s3:PutObjectAcl and public-read object uploads for this bucket."
                     )
                 return f"S3 AccessDenied during {operation}. Check IAM permission for s3:{operation} on this bucket/key."
             return f"S3 {code}: {message}"
@@ -251,19 +253,18 @@ class S3Service:
 
     def _s3_unavailable_detail(self) -> str:
         if not self.bucket:
-            return "S3 bucket not configured. Set AWS_BUCKET_NAME or AWS_S3_BUCKET."
+            return "S3 bucket not configured. Set AWS_BUCKET_NAME."
         if self.session_error:
             return f"S3 configuration error: {self.session_error}"
         return (
-            "AWS credentials not found for S3. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in drive-backend/.env, "
-            "or configure AWS CLI credentials with aws configure / AWS_PROFILE."
+            "AWS credentials not found for S3. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BUCKET_NAME, and AWS_REGION."
         )
 
     def _ensure_s3_ready(self) -> bool:
         if self.enabled and self.client:
             return True
         detail = self._s3_unavailable_detail()
-        logger.warning("S3 unavailable, falling back to local storage: %s", detail)
+        logger.warning("S3 unavailable: %s", detail)
         self.enabled = False
         return False
 
@@ -275,9 +276,13 @@ class S3Service:
         owner_id: str,
         folder_id: str | None = None,
     ) -> str:
-        if not self.bucket or not self._ensure_s3_ready():
+        if not self.bucket:
             return self._store_local_file(content, filename, owner_id, folder_id)
-        # if enabled, try S3 and fallback to local on error
+        if not self._ensure_s3_ready():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=self._s3_unavailable_detail(),
+            )
 
         safe_name = Path(filename).name or "unnamed"
         key = self.build_key(
@@ -301,8 +306,11 @@ class S3Service:
             logger.info("Uploaded object to S3: bucket=%s key=%s", self.bucket, key)
             return self._public_url(key)
         except Exception as exc:
-            logger.error("Failed to upload object to S3, using local storage instead: %s", self._format_s3_error(exc, operation="PutObject"))
-            return self._store_local_file(content, filename, owner_id, folder_id)
+            logger.error("Failed to upload object to S3: bucket=%s key=%s error=%s", self.bucket, key, self._format_s3_error(exc, operation="PutObject"))
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="File upload to S3 failed",
+            ) from exc
 
     def build_key(self, owner_id: str, filename: str, folder_id: str | None = None, prefix: str = "uploads") -> str:
         safe_name = Path(filename).name or "unnamed"
@@ -331,9 +339,12 @@ class S3Service:
 
         def _create() -> str:
             assert self.client is not None
-            params = {"Bucket": self.bucket, "Key": key, "ContentType": content_type}
-            if config.AWS_S3_PUBLIC_READ:
-                params["ACL"] = "public-read"
+            params = {
+                "Bucket": self.bucket,
+                "Key": key,
+                "ContentType": content_type,
+                "ACL": "public-read",
+            }
             return self.client.generate_presigned_url(
                 "put_object",
                 Params=params,
@@ -366,7 +377,14 @@ class S3Service:
                 ExpiresIn=expires_in,
             )
 
-        return await to_thread.run_sync(_create)
+        try:
+            return await to_thread.run_sync(_create)
+        except Exception as exc:
+            logger.error("Failed to create presigned GET URL: bucket=%s key=%s error=%s", self.bucket, object_key, self._format_s3_error(exc, "GetObject"))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create file download URL",
+            ) from exc
 
     async def start_multipart_upload(
         self,
@@ -385,8 +403,15 @@ class S3Service:
             response = self.client.create_multipart_upload(Bucket=self.bucket, Key=key, **self._multipart_upload_args(content_type))
             return response["UploadId"]
 
-        upload_id = await to_thread.run_sync(_start)
-        return {"upload_id": upload_id, "key": key, "file_url": self._public_url(key)}
+        try:
+            upload_id = await to_thread.run_sync(_start)
+            return {"upload_id": upload_id, "key": key, "file_url": self._public_url(key)}
+        except Exception as exc:
+            logger.error("Failed to start multipart upload: bucket=%s key=%s error=%s", self.bucket, key, self._format_s3_error(exc, "CreateMultipartUpload"))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not start multipart upload",
+            ) from exc
 
     async def get_multipart_part_url(self, key: str, upload_id: str, part_number: int, expires_in: int = 3600) -> str:
         if not self.bucket or not self._ensure_s3_ready():
@@ -405,7 +430,14 @@ class S3Service:
                 ExpiresIn=expires_in,
             )
 
-        return await to_thread.run_sync(_create)
+        try:
+            return await to_thread.run_sync(_create)
+        except Exception as exc:
+            logger.error("Failed to create multipart part URL: bucket=%s key=%s upload_id=%s error=%s", self.bucket, key, upload_id, self._format_s3_error(exc, "UploadPart"))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create multipart part upload URL",
+            ) from exc
 
     async def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> str:
         if not self.bucket or not self._ensure_s3_ready():
@@ -423,8 +455,15 @@ class S3Service:
                 MultipartUpload={"Parts": normalized_parts},
             )
 
-        await to_thread.run_sync(_complete)
-        return self._public_url(key)
+        try:
+            await to_thread.run_sync(_complete)
+            return self._public_url(key)
+        except Exception as exc:
+            logger.error("Failed to complete multipart upload: bucket=%s key=%s upload_id=%s error=%s", self.bucket, key, upload_id, self._format_s3_error(exc, "CompleteMultipartUpload"))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not finalize multipart upload",
+            ) from exc
 
     async def abort_multipart_upload(self, key: str, upload_id: str) -> None:
         if not self.bucket:
@@ -436,7 +475,10 @@ class S3Service:
             assert self.client is not None
             self.client.abort_multipart_upload(Bucket=self.bucket, Key=key, UploadId=upload_id)
 
-        await to_thread.run_sync(_abort)
+        try:
+            await to_thread.run_sync(_abort)
+        except Exception as exc:
+            logger.error("Failed to abort multipart upload: bucket=%s key=%s upload_id=%s error=%s", self.bucket, key, upload_id, self._format_s3_error(exc, "AbortMultipartUpload"))
 
     async def get_object(self, key: str, range_header: str | None = None) -> dict:
         if self._is_local_upload(key):

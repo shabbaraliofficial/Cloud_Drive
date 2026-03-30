@@ -1,11 +1,13 @@
 from __future__ import annotations
 from datetime import datetime
+import logging
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, Field
+from pymongo.errors import PyMongoError
 
 from app.core import config
 from app.database.mongodb import get_database
@@ -16,6 +18,7 @@ from app.utils.storage import build_storage_payload, ensure_user_storage_limit, 
 
 router = APIRouter(prefix="/api/profile", tags=["Profile"])
 s3_service = S3Service()
+logger = logging.getLogger(__name__)
 LOCAL_PROFILE_UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads" / "profile"
 LOCAL_PROFILE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -238,22 +241,38 @@ async def upload_profile_photo(
     suffix = Path(file.filename or "").suffix.lower() or ".jpg"
     safe_name = f"{current_user['_id']}-{uuid4().hex}{suffix}"
 
-    if config.AWS_S3_BUCKET:
-        photo_url = await s3_service.upload_bytes(
-            content=content,
-            content_type=file.content_type,
-            filename=safe_name,
-            owner_id=str(current_user["_id"]),
-        )
-    else:
-        local_path = LOCAL_PROFILE_UPLOAD_DIR / safe_name
-        local_path.write_bytes(content)
-        photo_url = f"/uploads/profile/{safe_name}"
+    try:
+        if config.AWS_S3_BUCKET:
+            photo_url = await s3_service.upload_bytes(
+                content=content,
+                content_type=file.content_type,
+                filename=safe_name,
+                owner_id=str(current_user["_id"]),
+            )
+        else:
+            local_path = LOCAL_PROFILE_UPLOAD_DIR / safe_name
+            local_path.write_bytes(content)
+            photo_url = f"/uploads/profile/{safe_name}"
+    except Exception as exc:
+        logger.exception("Profile photo upload failed: user_id=%s", current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Profile photo upload failed",
+        ) from exc
 
-    await db.users.update_one(
-        {"_id": current_user["_id"]},
-        {"$set": {"profile_picture": photo_url, "updated_at": datetime.utcnow()}},
-    )
+    try:
+        await db.users.update_one(
+            {"_id": current_user["_id"]},
+            {"$set": {"profile_picture": photo_url, "updated_at": datetime.utcnow()}},
+        )
+    except PyMongoError as exc:
+        logger.exception("Failed to persist profile photo metadata: user_id=%s", current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Profile photo uploaded but could not be saved",
+        ) from exc
+
+    logger.info("Profile photo updated: user_id=%s", current_user.get("_id"))
     return ProfilePhotoResponse(profile_picture=_to_photo_url(photo_url, request) or "")
 
 

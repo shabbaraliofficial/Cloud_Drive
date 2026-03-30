@@ -86,7 +86,7 @@ def build_search_type_query(file_type: str | None) -> dict | None:
                 {"tags": {"$regex": "pdf|document", "$options": "i"}},
             ]
         }
-    if normalized == "document":
+    if normalized in {"document", "documents", "doc", "docs"}:
         return {
             "$or": [
                 {"mime_type": {"$regex": r"(pdf|msword|officedocument|text/)", "$options": "i"}},
@@ -120,6 +120,9 @@ def build_location_filter(location: str | None, item_kind: str = "file") -> dict
     normalized = _normalize_slug(location)
     if normalized in {"", "any", "anywhere"}:
         return None
+
+    if normalized == "drive":
+        normalized = "my_drive"
 
     if item_kind == "folder":
         if normalized == "my_drive":

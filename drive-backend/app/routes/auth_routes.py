@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
+import logging
 import os
 from urllib.parse import urlencode
 
@@ -31,12 +32,10 @@ from app.utils.plans import build_plan_update
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 debug_router = APIRouter(prefix="/api/debug", tags=["Debug"])
+logger = logging.getLogger(__name__)
 
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-
-print("GOOGLE_CLIENT_ID loaded:", bool(os.getenv("GOOGLE_CLIENT_ID")))
-print("GOOGLE_CLIENT_SECRET loaded:", bool(os.getenv("GOOGLE_CLIENT_SECRET")))
+GOOGLE_REDIRECT_URI = config.GOOGLE_REDIRECT_URI or os.getenv("GOOGLE_REDIRECT_URI", "")
+FRONTEND_URL = config.FRONTEND_URL
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -55,10 +54,9 @@ async def register(
             otp = await otp_service.create_otp(payload.email, "register")
             try:
                 await send_otp_email(payload.email, otp)
-                print("OTP email sent to:", payload.email)
+                logger.info("OTP email sent for registration resend: email=%s", payload.email)
             except Exception as exc:
-                print("Failed to send OTP email:", payload.email, str(exc))
-            print("Resending OTP to existing unverified user")
+                logger.warning("Failed to resend registration OTP: email=%s error=%s", payload.email, exc)
             response.status_code = status.HTTP_200_OK
             return RegisterResponse(message="OTP resent to email", email=payload.email)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already registered")
@@ -110,9 +108,9 @@ async def register(
     otp = await otp_service.create_otp(payload.email, "register")
     try:
         await send_otp_email(payload.email, otp)
-        print("OTP email sent to:", payload.email)
+        logger.info("OTP email sent for registration: email=%s", payload.email)
     except Exception as exc:
-        print("Failed to send OTP email:", payload.email, str(exc))
+        logger.warning("Failed to send registration OTP: email=%s error=%s", payload.email, exc)
     return RegisterResponse(message="OTP sent to your email", email=payload.email)
 
 
@@ -134,14 +132,29 @@ async def verify_otp(payload: VerifyOtpRequest, db: AsyncIOMotorDatabase = Depen
 
 @router.post("/login", response_model=AuthTokenResponse)
 async def login(payload: LoginRequest, db: AsyncIOMotorDatabase = Depends(get_database)) -> AuthTokenResponse:
-    user = await db.users.find_one({"username": payload.username})
+    identifier = (payload.username or "").strip()
+    user = await db.users.find_one(
+        {
+            "$or": [
+                {"username": identifier},
+                {"email": identifier},
+            ]
+        }
+    )
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.get("is_active", False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not active")
 
-    access_token = create_access_token(str(user["_id"]), extra={"username": user["username"]})
-    refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user["username"]})
+    try:
+        access_token = create_access_token(str(user["_id"]), extra={"username": user["username"]})
+        refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user["username"]})
+    except RuntimeError as exc:
+        logger.exception("JWT configuration error during login")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication service is not configured",
+        ) from exc
     await db.users.update_one({"_id": user["_id"]}, {"$set": {"last_login": datetime.utcnow(), "updated_at": datetime.utcnow()}})
     return AuthTokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -168,8 +181,15 @@ async def refresh_token(payload: RefreshTokenRequest, db: AsyncIOMotorDatabase =
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    access_token = create_access_token(str(user["_id"]), extra={"username": user["username"]})
-    refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user["username"]})
+    try:
+        access_token = create_access_token(str(user["_id"]), extra={"username": user["username"]})
+        refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user["username"]})
+    except RuntimeError as exc:
+        logger.exception("JWT configuration error during token refresh")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication service is not configured",
+        ) from exc
     return AuthTokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 
@@ -250,10 +270,10 @@ async def social_apple(_: SocialLoginPlaceholderRequest) -> MessageResponse:
 async def google_login(request: Request) -> RedirectResponse:
     try:
         redirect_uri = request.url_for("google_callback")
-        print("Google OAuth redirect_uri:", redirect_uri)
+        logger.info("Starting Google OAuth login: redirect_uri=%s", redirect_uri)
         return await oauth.google.authorize_redirect(request, str(redirect_uri))
     except Exception as exc:
-        print("Google OAuth login error:", repr(exc))
+        logger.exception("Google OAuth login failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth login failed") from exc
 
 
@@ -271,13 +291,13 @@ async def google_callback(
             except Exception:
                 profile = {}
     except Exception as exc:
-        print("Google OAuth callback token exchange failed:", str(exc))
+        logger.warning("Google OAuth callback token exchange failed: error=%s", exc)
         error_qs = urlencode({"oauth_error": "token_exchange_failed"})
         return RedirectResponse(url=f"{FRONTEND_URL}/login?{error_qs}", status_code=status.HTTP_302_FOUND)
 
     email = (profile or {}).get("email")
     if not email:
-        print("Google OAuth callback missing email:", profile)
+        logger.warning("Google OAuth callback missing email: profile=%s", profile)
         error_qs = urlencode({"oauth_error": "missing_email"})
         return RedirectResponse(url=f"{FRONTEND_URL}/login?{error_qs}", status_code=status.HTTP_302_FOUND)
 
@@ -344,8 +364,13 @@ async def google_callback(
         user = await db.users.find_one({"_id": user["_id"]})
 
     assert user is not None
-    access_token = create_access_token(str(user["_id"]), extra={"username": user.get("username", "")})
-    refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user.get("username", "")})
+    try:
+        access_token = create_access_token(str(user["_id"]), extra={"username": user.get("username", "")})
+        refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user.get("username", "")})
+    except RuntimeError as exc:
+        logger.exception("JWT configuration error during Google OAuth callback")
+        error_qs = urlencode({"oauth_error": "server_misconfigured"})
+        return RedirectResponse(url=f"{FRONTEND_URL}/login?{error_qs}", status_code=status.HTTP_302_FOUND)
 
     query = urlencode(
         {
@@ -366,8 +391,8 @@ async def send_test_email(
     otp = await otp_service.create_otp(email, "debug_test")
     try:
         await send_otp_email(email, otp)
-        print("OTP email sent to:", email)
+        logger.info("Debug OTP email sent: email=%s", email)
     except Exception as exc:
-        print("Failed to send OTP email:", email, str(exc))
+        logger.warning("Debug OTP email failed: email=%s error=%s", email, exc)
     return {"message": "Test OTP email attempted", "email": email}
 

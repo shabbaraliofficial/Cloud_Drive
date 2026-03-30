@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Search, SlidersHorizontal, X } from 'lucide-react'
+import { SlidersHorizontal, X } from 'lucide-react'
 
 import { createAdvancedSearchFormValues } from '../../lib/search'
 
@@ -53,6 +53,10 @@ function CheckboxField({ label, checked, onChange }) {
 
 function AdvancedSearchModal({ initialValues, onClose, onSearch }) {
   const [formState, setFormState] = useState(() => createAdvancedSearchFormValues(initialValues))
+
+  useEffect(() => {
+    setFormState(createAdvancedSearchFormValues(initialValues))
+  }, [initialValues])
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -127,26 +131,6 @@ function AdvancedSearchModal({ initialValues, onClose, onSearch }) {
               value={formState.includesWords}
               onChange={(event) => updateField('includesWords', event.target.value)}
             />
-            <TextField
-              label="Shared To"
-              type="email"
-              placeholder="name@example.com"
-              value={formState.sharedTo}
-              onChange={(event) => updateField('sharedTo', event.target.value)}
-            />
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-700 dark:bg-slate-950">
-              <div className="flex items-center gap-3">
-                <div className="rounded-2xl bg-sky-100 p-3 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
-                  <Search size={18} />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Live search</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Applying search closes this modal and refreshes results instantly.
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -159,7 +143,7 @@ function AdvancedSearchModal({ initialValues, onClose, onSearch }) {
               <option value="image">Image</option>
               <option value="video">Video</option>
               <option value="pdf">PDF</option>
-              <option value="document">Document</option>
+              <option value="docs">Docs</option>
             </SelectField>
 
             <SelectField
@@ -178,7 +162,7 @@ function AdvancedSearchModal({ initialValues, onClose, onSearch }) {
               onChange={(event) => updateField('location', event.target.value)}
             >
               <option value="anywhere">Anywhere</option>
-              <option value="my_drive">My Drive</option>
+              <option value="drive">Drive</option>
               <option value="folder">Folder</option>
             </SelectField>
 

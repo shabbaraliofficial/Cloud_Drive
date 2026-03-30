@@ -1,19 +1,17 @@
 from __future__ import annotations
-import os
 
-from dotenv import load_dotenv
 from fastapi_mail import ConnectionConfig
 
-load_dotenv()
+from app.core import config
 
 conf = ConnectionConfig(
-    MAIL_USERNAME=os.getenv("SMTP_USER"),
-    MAIL_PASSWORD=os.getenv("SMTP_PASS"),
-    MAIL_FROM=os.getenv("SMTP_USER"),
-    MAIL_PORT=int(os.getenv("SMTP_PORT", 587)),
-    MAIL_SERVER=os.getenv("SMTP_HOST"),
+    MAIL_USERNAME=config.SMTP_USER,
+    MAIL_PASSWORD=config.SMTP_PASSWORD,
+    MAIL_FROM=config.SMTP_FROM or config.SMTP_USER,
+    MAIL_PORT=config.SMTP_PORT,
+    MAIL_SERVER=config.SMTP_HOST,
     MAIL_STARTTLS=True,
     MAIL_SSL_TLS=False,
-    USE_CREDENTIALS=True,
+    USE_CREDENTIALS=bool(config.SMTP_USER and config.SMTP_PASSWORD),
     VALIDATE_CERTS=True,
 )

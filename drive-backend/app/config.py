@@ -10,19 +10,43 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / ".env"
-_env_loaded = load_dotenv(ENV_PATH, override=False)
+REPO_ENV_PATH = BASE_DIR.parent / ".env"
+BACKEND_ENV_LOADED = load_dotenv(ENV_PATH, override=False)
+REPO_ENV_LOADED = load_dotenv(REPO_ENV_PATH, override=False)
+
+
+def _getenv(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            continue
+        cleaned = str(value).strip().strip('"').strip("'").strip()
+        if cleaned:
+            return cleaned
+    return default
+
+
+def _getenv_bool(name: str, default: bool = False) -> bool:
+    value = str(os.getenv(name, str(default))).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
 
 APP_NAME = os.getenv("APP_NAME", "Cloud Drive Backend")
 APP_ENV = os.getenv("APP_ENV", "development")
-APP_DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
+APP_DEBUG = _getenv_bool("APP_DEBUG", False)
+HOST = _getenv("HOST", default="0.0.0.0")
+PORT = int(_getenv("PORT", default="10000"))
 
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "cloud_drive_db")
+MONGO_URL = _getenv("MONGO_URL", "MONGODB_URL")
+MONGODB_URL = MONGO_URL
+MONGODB_DB_NAME = _getenv("MONGODB_DB_NAME")
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change_me")
+JWT_SECRET = _getenv("JWT_SECRET", "JWT_SECRET_KEY")
+JWT_SECRET_KEY = JWT_SECRET
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+SESSION_SECRET_KEY = _getenv("SESSION_SECRET_KEY", "SESSION_SECRET", "JWT_SECRET", "JWT_SECRET_KEY")
 
 OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "10"))
 OTP_LENGTH = int(os.getenv("OTP_LENGTH", "6"))
@@ -38,51 +62,50 @@ ALLOWED_MIME_TYPES = [
     if item.strip()
 ]
 
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-AWS_SESSION_TOKEN = os.getenv("AWS_SESSION_TOKEN", "")
-AWS_PROFILE = os.getenv("AWS_PROFILE", "")
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
-AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "")
-AWS_S3_BUCKET = AWS_BUCKET_NAME or os.getenv("AWS_S3_BUCKET", "")
-AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL", "")
-AWS_S3_PUBLIC_READ = os.getenv("AWS_S3_PUBLIC_READ", "false").lower() == "true"
+AWS_ACCESS_KEY_ID = _getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = _getenv("AWS_SECRET_ACCESS_KEY")
+AWS_SESSION_TOKEN = _getenv("AWS_SESSION_TOKEN")
+AWS_PROFILE = _getenv("AWS_PROFILE")
+AWS_REGION = _getenv("AWS_REGION")
+AWS_BUCKET_NAME = _getenv("AWS_BUCKET_NAME", "AWS_S3_BUCKET")
+AWS_S3_BUCKET = AWS_BUCKET_NAME
+AWS_S3_ENDPOINT_URL = _getenv("AWS_S3_ENDPOINT_URL")
+AWS_S3_PUBLIC_READ = _getenv_bool("AWS_S3_PUBLIC_READ", True)
 
-SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_HOST = _getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM = os.getenv("SMTP_FROM", "")
+SMTP_USER = _getenv("SMTP_USER")
+SMTP_PASSWORD = _getenv("SMTP_PASSWORD", "SMTP_PASS")
+SMTP_FROM = _getenv("SMTP_FROM", "SMTP_USER")
 
-EMAIL_USER = os.getenv("EMAIL_USER", "")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+EMAIL_USER = _getenv("EMAIL_USER", "SMTP_USER")
+EMAIL_PASSWORD = _getenv("EMAIL_PASSWORD", "SMTP_PASSWORD", "SMTP_PASS")
 
 CORS_ORIGINS = [
     item.strip()
     for item in os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
+        "http://localhost:5173,https://your-frontend-domain.com",
     ).split(",")
     if item.strip()
 ]
 
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_KEY_ID = _getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = _getenv("RAZORPAY_KEY_SECRET")
+FRONTEND_URL = _getenv("FRONTEND_URL", default="http://localhost:5173")
+GOOGLE_REDIRECT_URI = _getenv("GOOGLE_REDIRECT_URI")
 
-if _env_loaded:
-    logger.info("Loaded environment from %s", ENV_PATH)
+if BACKEND_ENV_LOADED:
+    logger.info("Loaded backend environment from %s", ENV_PATH)
+elif REPO_ENV_LOADED:
+    logger.info("Loaded repository environment from %s", REPO_ENV_PATH)
 else:
-    logger.warning("No .env file found at %s", ENV_PATH)
-logger.info(
-    "AWS_ACCESS_KEY_ID: %s",
-    f"{AWS_ACCESS_KEY_ID[:4]}..." if AWS_ACCESS_KEY_ID else "<missing>",
-)
-logger.info("AWS_BUCKET_NAME: %s", AWS_BUCKET_NAME or "<missing>")
-logger.info("AWS_PROFILE: %s", AWS_PROFILE or "<not set>")
-logger.info("AWS_S3_PUBLIC_READ: %s", AWS_S3_PUBLIC_READ)
+    logger.info("No .env file found. Using environment variables from the host instead.")
 
-logger.info(
-    "RAZORPAY_KEY_ID: %s",
-    f"{RAZORPAY_KEY_ID[:8]}..." if RAZORPAY_KEY_ID else "<missing>",
-)
-logger.info("RAZORPAY_KEY_SECRET set: %s", bool(RAZORPAY_KEY_SECRET))
+logger.info("Render host/port configured: %s:%s", HOST, PORT)
+logger.info("Mongo URL configured: %s", bool(MONGODB_URL))
+logger.info("Mongo DB name configured: %s", bool(MONGODB_DB_NAME))
+logger.info("JWT secret configured: %s", bool(JWT_SECRET_KEY))
+logger.info("AWS bucket configured: %s", bool(AWS_BUCKET_NAME))
+logger.info("AWS region configured: %s", bool(AWS_REGION))
+logger.info("Razorpay configured: %s", bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET))

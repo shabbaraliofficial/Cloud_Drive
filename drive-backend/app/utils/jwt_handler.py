@@ -1,18 +1,18 @@
 from __future__ import annotations
-import os
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from dotenv import load_dotenv
 from jose import JWTError, jwt
 
-load_dotenv()
+from app.core import config
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change_me")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+def _require_jwt_secret() -> str:
+    if not config.JWT_SECRET_KEY:
+        raise RuntimeError("JWT secret is not configured. Set JWT_SECRET on the host.")
+    return config.JWT_SECRET_KEY
 
 
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
@@ -22,11 +22,11 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
         "type": "access",
         "jti": uuid4().hex,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).timestamp()),
+        "exp": int((now + timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)).timestamp()),
     }
     if extra:
         payload.update(extra)
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, _require_jwt_secret(), algorithm=config.JWT_ALGORITHM)
 
 
 def create_refresh_token(subject: str, extra: dict[str, Any] | None = None) -> str:
@@ -36,20 +36,19 @@ def create_refresh_token(subject: str, extra: dict[str, Any] | None = None) -> s
         "type": "refresh",
         "jti": uuid4().hex,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)).timestamp()),
+        "exp": int((now + timedelta(days=config.REFRESH_TOKEN_EXPIRE_DAYS)).timestamp()),
     }
     if extra:
         payload.update(extra)
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, _require_jwt_secret(), algorithm=config.JWT_ALGORITHM)
 
 
 def decode_token(token: str) -> dict[str, Any]:
-    return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    return jwt.decode(token, _require_jwt_secret(), algorithms=[config.JWT_ALGORITHM])
 
 
 def safe_decode_token(token: str) -> dict[str, Any] | None:
     try:
         return decode_token(token)
-    except JWTError:
+    except (JWTError, RuntimeError):
         return None
-

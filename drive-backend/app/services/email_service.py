@@ -8,9 +8,6 @@ from app.core import config
 
 logger = logging.getLogger(__name__)
 
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-
 
 class EmailService:
     async def send_email(self, to_email: str, subject: str, body: str) -> None:
@@ -37,12 +34,14 @@ class EmailService:
 async def send_otp_email(to_email: str, otp: str) -> None:
     email_user = config.EMAIL_USER or config.SMTP_USER
     email_password = config.EMAIL_PASSWORD or config.SMTP_PASSWORD
-    if not (email_user and email_password):
-        logger.warning("EMAIL_USER / EMAIL_PASSWORD not configured; skipping OTP email to %s", to_email)
+    smtp_host = config.SMTP_HOST
+    smtp_port = config.SMTP_PORT
+    if not (smtp_host and email_user and email_password):
+        logger.warning("SMTP / email credentials not configured; skipping OTP email to %s", to_email)
         return
 
     message = EmailMessage()
-    message["From"] = email_user
+    message["From"] = config.SMTP_FROM or email_user
     message["To"] = to_email
     message["Subject"] = "Your OTP Verification Code"
     message.set_content(f"Your OTP is: {otp}")
@@ -66,8 +65,8 @@ async def send_otp_email(to_email: str, otp: str) -> None:
 
     await aiosmtplib.send(
         message,
-        hostname=SMTP_SERVER,
-        port=SMTP_PORT,
+        hostname=smtp_host,
+        port=smtp_port,
         username=email_user,
         password=email_password,
         start_tls=True,

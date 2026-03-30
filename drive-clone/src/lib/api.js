@@ -555,6 +555,42 @@ export const api = {
     return request('/api/user/profile', { method: 'GET' }, true).then(normalizeProfileResponse)
   },
 
+  getAdminStats() {
+    return request('/admin/stats', { method: 'GET' }, true)
+  },
+
+  getAdminAnalytics() {
+    return request('/admin/analytics', { method: 'GET' }, true)
+  },
+
+  getAdminUsers() {
+    return request('/admin/users', { method: 'GET' }, true)
+  },
+
+  getAdminUserProfile(userId) {
+    return request(`/admin/user/${userId}`, { method: 'GET' }, true)
+  },
+
+  deleteAdminUser(userId) {
+    return request(`/admin/user/${userId}`, { method: 'DELETE' }, true)
+  },
+
+  toggleAdminUserBan(userId) {
+    return request(`/admin/user/${userId}/ban`, { method: 'PATCH' }, true)
+  },
+
+  removeAdminUserPremium(userId) {
+    return request(`/admin/user/${userId}/plan/free`, { method: 'PATCH' }, true)
+  },
+
+  getAdminFiles() {
+    return request('/admin/files', { method: 'GET' }, true)
+  },
+
+  deleteAdminFile(fileId) {
+    return request(`/admin/file/${fileId}`, { method: 'DELETE' }, true)
+  },
+
   createOrder(payload) {
     return request('/api/create-order', {
       method: 'POST',

@@ -64,3 +64,11 @@ async def get_optional_current_user(
     return await _resolve_current_user(authorization, db)
 
 
+async def get_admin_user(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    if str(current_user.get("role") or "user").lower() != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+

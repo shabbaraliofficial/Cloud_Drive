@@ -5,7 +5,7 @@ import { API_BASE_URL } from '../../lib/api'
 import { clearAuthTokens, getAccessToken } from '../../lib/auth'
 import { detectFileKind, toAbsoluteFileUrl } from '../../lib/filePreview'
 
-function FilePreviewModal({ open, file, onClose }) {
+function FilePreviewModal({ open, file, onClose, previewBasePath = '/api/files' }) {
   const [loading, setLoading] = useState(false)
   const [preview, setPreview] = useState(null)
   const [textPreview, setTextPreview] = useState('')
@@ -27,7 +27,7 @@ function FilePreviewModal({ open, file, onClose }) {
           clearAuthTokens()
           throw new Error('Missing bearer token. Please log in again.')
         }
-        const response = await fetch(`${API_BASE_URL}/api/files/${file.id}/preview`, {
+        const response = await fetch(`${API_BASE_URL}${previewBasePath}/${file.id}/preview`, {
           method: 'GET',
           headers: { Authorization: `Bearer ${token}` },
         })
@@ -89,7 +89,7 @@ function FilePreviewModal({ open, file, onClose }) {
       active = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [open, file])
+  }, [file, open, previewBasePath])
 
   useEffect(() => {
     if (!open || !preview?.url || preview.kind !== 'text') return undefined

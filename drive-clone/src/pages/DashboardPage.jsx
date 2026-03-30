@@ -24,6 +24,7 @@ import {
   StoragePanel,
   ViewHeader,
 } from '../components/dashboard/DashboardSections'
+import DriveFilterBar from '../components/dashboard/DriveFilterBar'
 import MediaGallery from '../components/dashboard/MediaGallery'
 import TrashView from '../components/dashboard/TrashView'
 import FilePreviewModal from '../components/file/FilePreviewModal'
@@ -58,6 +59,12 @@ const FOLDER_COLORS = [
 ]
 
 const EMPTY_STORAGE = normalizeStoragePayload()
+const DEFAULT_DRIVE_VIEW_FILTERS = Object.freeze({
+  type: 'all',
+  people: 'anyone',
+  modified: 'any_time',
+  source: 'all',
+})
 const RELATIVE_TIME_UNITS = [
   ['year', 1000 * 60 * 60 * 24 * 365],
   ['month', 1000 * 60 * 60 * 24 * 30],
@@ -83,6 +90,94 @@ function formatTimestamp(timestamp) {
   return `Updated ${date.toLocaleDateString()}`
 }
 
+function createDriveViewFilters(overrides = {}) {
+  return {
+    ...DEFAULT_DRIVE_VIEW_FILTERS,
+    ...overrides,
+  }
+}
+
+function countDriveViewFilters(filters = {}) {
+  const normalized = createDriveViewFilters(filters)
+  return Object.entries(DEFAULT_DRIVE_VIEW_FILTERS).reduce(
+    (count, [key, defaultValue]) => (normalized[key] !== defaultValue ? count + 1 : count),
+    0
+  )
+}
+
+function parseSafeDate(value) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return date
+}
+
+function matchesModifiedFilter(item, modifiedFilter) {
+  if (!modifiedFilter || modifiedFilter === 'any_time') return true
+
+  const date = parseSafeDate(item.updatedAt || item.createdAt || item.lastAccessedAt)
+  if (!date) return false
+
+  const now = new Date()
+  if (modifiedFilter === 'today') {
+    const start = new Date(now)
+    start.setHours(0, 0, 0, 0)
+    return date >= start && date <= now
+  }
+  if (modifiedFilter === 'last_7_days') {
+    return date >= new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000))
+  }
+  if (modifiedFilter === 'last_30_days') {
+    return date >= new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000))
+  }
+  return true
+}
+
+function isDocsItem(item) {
+  const name = String(item.name || '').toLowerCase()
+  const mimeType = String(item.mimeType || '').toLowerCase()
+  return /\.(pdf|doc|docx|txt|rtf|odt|ppt|pptx|xls|xlsx|csv|md)$/i.test(name)
+    || /(pdf|msword|officedocument|text\/|spreadsheet|presentation)/i.test(mimeType)
+}
+
+function matchesTypeFilter(item, typeFilter, itemKind = 'file') {
+  if (!typeFilter || typeFilter === 'all') return true
+  if (typeFilter === 'folders') return itemKind === 'folder'
+  if (typeFilter === 'files') return itemKind === 'file'
+  if (itemKind === 'folder') return false
+  if (typeFilter === 'docs') return isDocsItem(item)
+  return item.kind === typeFilter
+}
+
+function matchesPeopleFilter(item, peopleFilter, currentUserId) {
+  if (!peopleFilter || peopleFilter === 'anyone') return true
+
+  const ownerId = String(item.ownerId || '')
+  const currentId = String(currentUserId || '')
+  const isMine = Boolean(currentId) && ownerId === currentId
+  const hasSharing = Array.isArray(item.sharedWith) && item.sharedWith.length > 0
+
+  if (peopleFilter === 'me') return isMine
+  if (peopleFilter === 'others') return currentId ? !isMine : Boolean(ownerId)
+  if (peopleFilter === 'shared') return currentId ? (hasSharing || !isMine) : hasSharing
+  return true
+}
+
+function matchesSourceFilter(item, sourceFilter, currentUserId, itemKind = 'file') {
+  if (!sourceFilter || sourceFilter === 'all') return true
+
+  const ownerId = String(item.ownerId || '')
+  const currentId = String(currentUserId || '')
+  const isMine = Boolean(currentId) && ownerId === currentId
+  const hasSharing = Array.isArray(item.sharedWith) && item.sharedWith.length > 0
+  const isNested = itemKind === 'folder' ? Boolean(item.parentId) : Boolean(item.folderId)
+
+  if (sourceFilter === 'drive') return !isNested
+  if (sourceFilter === 'folder') return isNested
+  if (sourceFilter === 'shared') return currentId ? (hasSharing || !isMine) : hasSharing
+  return true
+}
+
 function normalizeFolders(rawFolders = [], rawFiles = []) {
   const filesPerFolder = rawFiles.reduce((acc, file) => {
     if (!file.folder_id) return acc
@@ -98,6 +193,7 @@ function normalizeFolders(rawFolders = [], rawFiles = []) {
     updatedAt: folder.updated_at || null,
     createdAt: folder.created_at || null,
     lastAccessedAt: folder.last_accessed || folder.last_accessed_at || folder.accessed_at || null,
+    parentId: folder.parent_folder_id || folder.parent_folder || null,
     ownerId: folder.owner_id || null,
     sharedWith: Array.isArray(folder.shared_with) ? folder.shared_with : [],
     permission: folder.permission || 'write',
@@ -734,6 +830,7 @@ function DashboardContent({
   const [zipBusy, setZipBusy] = useState(false)
   const [versionHistoryFile, setVersionHistoryFile] = useState(null)
   const [homeFilesView, setHomeFilesView] = useState('list')
+  const [driveViewFilters, setDriveViewFilters] = useState(() => createDriveViewFilters())
   const deferredSearchValue = useDeferredValue(searchValue)
   const searchRequest = useMemo(
     () => buildSearchRequestParams(deferredSearchValue, searchFilters),
@@ -840,6 +937,7 @@ function DashboardContent({
   const showTrashView = (selectedNav === 'bin' && !hasActiveSearch) || showBinSearchResults
   const showMediaView = selectedNav === 'media' && !hasActiveSearch
   const showStorageOnlyView = selectedNav === 'storage' && !hasActiveSearch
+  const showDriveFilterBar = selectedNav === 'my-drive' && !selectedFolderId && !hasActiveSearch
   const showFolderGrid = hasActiveSearch
     ? folders.length > 0
     : selectedNav === 'my-drive' || Boolean(selectedFolderId)
@@ -1125,6 +1223,10 @@ function DashboardContent({
       .sort(compareSuggestedFiles)
       .slice(0, 8)
   }, [activeFiles])
+  const activeDriveViewFilterCount = useMemo(
+    () => countDriveViewFilters(driveViewFilters),
+    [driveViewFilters]
+  )
 
   const visibleFiles = useMemo(() => {
     const source = selectedNav === 'media' ? mediaFiles : activeFiles
@@ -1134,25 +1236,45 @@ function DashboardContent({
     return source.filter((file) => String(file.folderId) === String(selectedFolderId))
   }, [activeFiles, hasActiveSearch, mediaFiles, selectedFolderId, selectedNav])
 
+  const renderedFolders = useMemo(() => {
+    if (!showDriveFilterBar) return folders
+    return folders.filter((folder) => (
+      matchesTypeFilter(folder, driveViewFilters.type, 'folder')
+      && matchesPeopleFilter(folder, driveViewFilters.people, currentUser?.id)
+      && matchesModifiedFilter(folder, driveViewFilters.modified)
+      && matchesSourceFilter(folder, driveViewFilters.source, currentUser?.id, 'folder')
+    ))
+  }, [currentUser?.id, driveViewFilters, folders, showDriveFilterBar])
+
+  const renderedFiles = useMemo(() => {
+    if (!showDriveFilterBar) return visibleFiles
+    return visibleFiles.filter((file) => (
+      matchesTypeFilter(file, driveViewFilters.type, 'file')
+      && matchesPeopleFilter(file, driveViewFilters.people, currentUser?.id)
+      && matchesModifiedFilter(file, driveViewFilters.modified)
+      && matchesSourceFilter(file, driveViewFilters.source, currentUser?.id, 'file')
+    ))
+  }, [currentUser?.id, driveViewFilters, showDriveFilterBar, visibleFiles])
+
   useEffect(() => {
-    const visibleIds = new Set(visibleFiles.map((file) => String(file.id)))
+    const visibleIds = new Set(renderedFiles.map((file) => String(file.id)))
     setSelectedFileIds((prev) => {
       const next = new Set([...prev].filter((id) => visibleIds.has(String(id))))
       const unchanged = next.size === prev.size && [...next].every((id) => prev.has(id))
       return unchanged ? prev : next
     })
-  }, [visibleFiles])
+  }, [renderedFiles])
 
   const selectedVisibleFiles = useMemo(() => {
-    return visibleFiles.filter((file) => selectedFileIds.has(String(file.id)))
-  }, [selectedFileIds, visibleFiles])
+    return renderedFiles.filter((file) => selectedFileIds.has(String(file.id)))
+  }, [renderedFiles, selectedFileIds])
 
   const allVisibleFilesSelected = useMemo(() => {
-    return visibleFiles.length > 0 && visibleFiles.every((file) => selectedFileIds.has(String(file.id)))
-  }, [selectedFileIds, visibleFiles])
+    return renderedFiles.length > 0 && renderedFiles.every((file) => selectedFileIds.has(String(file.id)))
+  }, [renderedFiles, selectedFileIds])
 
   const toggleSelectAllVisibleFiles = useCallback(() => {
-    const visibleIds = visibleFiles.map((file) => String(file.id))
+    const visibleIds = renderedFiles.map((file) => String(file.id))
     setSelectedFileIds((prev) => {
       const next = new Set(prev)
       const shouldClear = visibleIds.length > 0 && visibleIds.every((id) => next.has(id))
@@ -1167,7 +1289,7 @@ function DashboardContent({
 
       return next
     })
-  }, [visibleFiles])
+  }, [renderedFiles])
 
   const clearSelectedFiles = useCallback(() => {
     setSelectedFileIds(new Set())
@@ -1376,7 +1498,7 @@ function DashboardContent({
       if (!row) return null
       const bodyRows = Array.from(row.parentElement.children)
       const index = bodyRows.indexOf(row)
-      return visibleFiles[index]
+      return renderedFiles[index]
     })()
     if (!file) return
     setContextMenu({ x: event.clientX, y: event.clientY, item: file, type: 'file' })
@@ -1469,6 +1591,20 @@ function DashboardContent({
               <ViewHeader title={viewMeta.title} subtitle={viewMeta.subtitle} />
             )}
 
+            {showDriveFilterBar ? (
+              <DriveFilterBar
+                filters={driveViewFilters}
+                activeCount={activeDriveViewFilterCount}
+                onChange={(key, value) => {
+                  setDriveViewFilters((current) => createDriveViewFilters({
+                    ...current,
+                    [key]: value,
+                  }))
+                }}
+                onReset={() => setDriveViewFilters(createDriveViewFilters())}
+              />
+            ) : null}
+
             {showTrashView ? (
               <TrashView
                 items={showBinSearchResults ? visibleTrashItems : trashItems}
@@ -1497,7 +1633,7 @@ function DashboardContent({
                 {showFolderGrid ? (
                   <FolderGrid
                     title="Folders"
-                    folders={folders}
+                    folders={renderedFolders}
                     onOpenFolder={onOpenFolder}
                     onDeleteFolder={onDeleteFolder}
                     onFolderContextMenu={onFolderContextMenu}
@@ -1516,7 +1652,7 @@ function DashboardContent({
                     <div onContextMenu={onTableContextMenu}>
                       <FilesTable
                         title={selectedNav === 'my-drive' && !selectedFolderId && !hasActiveSearch ? 'Files' : null}
-                        files={visibleFiles}
+                        files={renderedFiles}
                         selectedFileIds={selectedFileIds}
                         allVisibleSelected={allVisibleFilesSelected}
                         onToggleFileSelection={toggleFileSelection}
@@ -1618,7 +1754,7 @@ function DashboardPage({ forcedFolderId = null, forcedNav = null }) {
     setSelectedNav(navId)
 
     if (navId === 'home') {
-      navigate('/dashboard')
+      navigate('/')
       return
     }
 
@@ -1652,7 +1788,7 @@ function DashboardPage({ forcedFolderId = null, forcedNav = null }) {
       return
     }
 
-    navigate('/dashboard')
+    navigate('/')
   }
 
   const applyAdvancedSearch = useCallback((values) => {

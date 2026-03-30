@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 def _create_session():
-    session_kwargs: dict[str, str] = {"region_name": config.AWS_REGION}
+    session_kwargs: dict[str, str] = {}
+    if config.AWS_REGION:
+        session_kwargs["region_name"] = config.AWS_REGION
     if config.AWS_PROFILE:
         session_kwargs["profile_name"] = config.AWS_PROFILE
     elif config.AWS_ACCESS_KEY_ID and config.AWS_SECRET_ACCESS_KEY:
@@ -50,9 +52,10 @@ def build_s3_key(filename: str, owner_id: str | None = None, folder_id: str | No
 
 def upload_file_to_s3(file_obj, key: str, content_type: str | None = None) -> str:
     client = _create_client()
-    extra_args = {"ContentType": content_type or "application/octet-stream"}
-    if config.AWS_S3_PUBLIC_READ:
-        extra_args["ACL"] = "public-read"
+    extra_args = {
+        "ContentType": content_type or "application/octet-stream",
+        "ACL": "public-read",
+    }
 
     file_obj.seek(0)
     try:

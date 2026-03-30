@@ -1,22 +1,21 @@
 from __future__ import annotations
+
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
-import os
+import secrets
 
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, PartialCredentialsError
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pymongo.errors import PyMongoError
 from starlette.middleware.sessions import SessionMiddleware
+import uvicorn
 
-# Load .env from repo root and backend root; never crash if missing
-BACKEND_ROOT = Path(__file__).resolve().parent.parent
-REPO_ROOT = BACKEND_ROOT.parent
-for candidate in (BACKEND_ROOT / ".env", REPO_ROOT / ".env"):
-    if candidate.exists():
-        load_dotenv(dotenv_path=candidate, override=False)
-
-print("AWS KEY loaded:", bool(os.getenv("AWS_ACCESS_KEY_ID")))
+load_dotenv()
 
 from app.core import config
 from app.core.logging import setup_logging
@@ -25,41 +24,46 @@ from app.routes.api import api_router
 from app.routes.profile_routes import router as profile_router
 
 setup_logging()
+logger = logging.getLogger(__name__)
 
-# MongoDB connection lifecycle
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = BACKEND_ROOT.parent
+SESSION_SECRET = config.SESSION_SECRET_KEY or secrets.token_urlsafe(32)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    print("Connecting to MongoDB...")
+    logger.info("Starting backend lifespan")
     await connect_to_mongo()
-    print("MongoDB Connected ✅")
     yield
-    print("Closing MongoDB connection...")
+    logger.info("Shutting down backend lifespan")
     await close_mongo_connection()
-    print("MongoDB Closed ❌")
 
-# Create FastAPI app
+
 app = FastAPI(
     title=config.APP_NAME,
     debug=config.APP_DEBUG,
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
-# Required by Authlib OAuth to store state during redirect flow
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("SESSION_SECRET_KEY", "change-this-session-secret"),
+    secret_key=SESSION_SECRET,
 )
 
-# Enable CORS
+origins = config.CORS_ORIGINS or [
+    "http://localhost:5173",
+    "https://your-frontend-domain.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS or ["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include all API routes
 app.include_router(api_router)
 app.include_router(profile_router)
 
@@ -67,20 +71,50 @@ uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
-# Root endpoint (ADD THIS)
-@app.get("/")
-async def root():
-    return {
-        "message": "Drive Backend is running successfully 🚀",
-        "docs": "http://127.0.0.1:8000/docs",
-        "health": "http://127.0.0.1:8000/health"
-    }
+favicon_path = REPO_ROOT / "drive-clone" / "public" / "favicon.ico"
 
-# Health check endpoint
+
+@app.exception_handler(PyMongoError)
+async def handle_mongo_error(request: Request, exc: PyMongoError) -> JSONResponse:
+    logger.exception("MongoDB error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Database operation failed"})
+
+
+@app.exception_handler(ClientError)
+async def handle_s3_client_error(request: Request, exc: ClientError) -> JSONResponse:
+    logger.exception("S3 client error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=502, content={"detail": "File storage operation failed"})
+
+
+@app.exception_handler(BotoCoreError)
+@app.exception_handler(NoCredentialsError)
+@app.exception_handler(PartialCredentialsError)
+async def handle_s3_error(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("S3 error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=502, content={"detail": "File storage operation failed"})
+
+
+@app.get("/")
+def health_check():
+    return {"status": "Backend running"}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    if favicon_path.exists():
+        return FileResponse(str(favicon_path))
+    return Response(status_code=204)
+
+
 @app.get("/health")
 async def health():
-    result = await test_mongo_connection()
+    mongo = await test_mongo_connection()
+    service_status = "ok" if float(mongo.get("ok", 0.0)) >= 1.0 else "degraded"
     return {
-        "status": "ok",
-        "mongo": result
+        "status": service_status,
+        "mongo": mongo,
     }
+
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=config.PORT)

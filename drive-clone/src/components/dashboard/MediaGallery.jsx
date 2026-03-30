@@ -1,11 +1,12 @@
-import { format, isToday, isYesterday } from 'date-fns'
+import { format, isThisMonth, isToday, isYesterday } from 'date-fns'
 import { Image as ImageIcon, PlayCircle } from 'lucide-react'
 
 function groupMedia(files = []) {
   const groups = {
     Today: [],
     Yesterday: [],
-    Older: [],
+    'This Month': [],
+    Earlier: [],
   }
 
   files.forEach((file) => {
@@ -20,8 +21,12 @@ function groupMedia(files = []) {
         groups.Yesterday.push(file)
         return
       }
+      if (isThisMonth(parsedDate)) {
+        groups['This Month'].push(file)
+        return
+      }
     }
-    groups.Older.push(file)
+    groups.Earlier.push(file)
   })
 
   return Object.entries(groups).filter(([, items]) => items.length)

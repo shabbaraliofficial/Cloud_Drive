@@ -4,7 +4,8 @@ import { Apple, Chrome, Facebook, ShieldCheck } from 'lucide-react'
 import AuthShell from '../components/auth/AuthShell'
 import AuthInput from '../components/auth/AuthInput'
 import { api } from '../lib/api'
-import { setAuthTokens } from '../lib/auth'
+import { clearAuthTokens, setAuthTokens } from '../lib/auth'
+import { getHomeRouteForRole } from '../lib/roleRoutes'
 
 function SocialButton({ icon, label, onClick }) {
   const SocialIcon = icon
@@ -29,6 +30,7 @@ function LoginPage() {
   const location = useLocation()
 
   useEffect(() => {
+    let cancelled = false
     const params = new URLSearchParams(location.search)
     const accessToken = params.get('access_token')
     const refreshToken = params.get('refresh_token')
@@ -36,12 +38,28 @@ function LoginPage() {
 
     if (oauthError) {
       setSubmitError(`Google login failed: ${oauthError}`)
-      return
+      return undefined
     }
 
-    if (accessToken && refreshToken) {
-      setAuthTokens(accessToken, refreshToken)
-      navigate('/dashboard', { replace: true })
+    const hydrateSession = async () => {
+      if (!accessToken || !refreshToken) return
+
+      try {
+        setAuthTokens(accessToken, refreshToken)
+        const profile = await api.getProfile()
+        if (cancelled) return
+        navigate(getHomeRouteForRole(profile?.role), { replace: true })
+      } catch (error) {
+        clearAuthTokens()
+        if (cancelled) return
+        setSubmitError(error?.message || 'Unable to restore your session')
+      }
+    }
+
+    hydrateSession()
+
+    return () => {
+      cancelled = true
     }
   }, [location.search, navigate])
 
@@ -71,8 +89,10 @@ function LoginPage() {
         password: credentials.password,
       })
       setAuthTokens(tokenData.access_token, tokenData.refresh_token)
-      navigate('/dashboard', { replace: true })
+      const profile = await api.getProfile()
+      navigate(getHomeRouteForRole(profile?.role), { replace: true })
     } catch (error) {
+      clearAuthTokens()
       setSubmitError(error.message)
     } finally {
       setIsSubmitting(false)
@@ -105,13 +125,13 @@ function LoginPage() {
     >
       <form className="space-y-4" onSubmit={loginWithCredentials}>
         <AuthInput
-          label="Username"
+          label="Username or Email"
           name="username"
           value={credentials.username}
           onChange={onChange}
           error={errors.username}
           autoComplete="username"
-          placeholder={location.state?.username || 'Enter username'}
+          placeholder={location.state?.username || 'Enter username or email'}
         />
         <AuthInput
           label="Password"
@@ -141,6 +161,15 @@ function LoginPage() {
             className="text-blue-400 hover:text-blue-300 font-semibold ml-1"
           >
             Create Account
+          </Link>
+        </p>
+        <p className="mt-2 text-gray-400">
+          Need administrator access?
+          <Link
+            to="/admin/login"
+            className="ml-1 font-semibold text-blue-400 hover:text-blue-300"
+          >
+            Admin Login
           </Link>
         </p>
       </div>

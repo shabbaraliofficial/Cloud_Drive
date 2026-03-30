@@ -3,19 +3,87 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import RegisterPage from './pages/RegisterPage'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import AdminPage from './pages/AdminPage'
+import AdminLoginPage from './pages/AdminLoginPage'
 import FolderPage from './pages/FolderPage'
 import ProfilePage from './pages/ProfilePage'
 import SharePage from './pages/SharePage'
 import Toaster from './components/ui/Toaster'
 import ThemeProvider from './context/ThemeProvider'
+import useProfile from './hooks/useProfile'
 import { getAuthSnapshot, subscribeAuth } from './lib/auth'
+import { getHomeRouteForRole, isAdminRole } from './lib/roleRoutes'
 
-function ProtectedRoute({ children }) {
+function RouteLoadingState({ message }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-white text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+      {message}
+    </div>
+  )
+}
+
+function PublicRoute({ children }) {
   const authenticated = useSyncExternalStore(subscribeAuth, getAuthSnapshot, () => false)
+  const { user, loading } = useProfile()
+
+  if (!authenticated) {
+    return children
+  }
+
+  if (loading) {
+    return <RouteLoadingState message="Restoring your workspace..." />
+  }
+
+  if (user) {
+    return <Navigate to={getHomeRouteForRole(user.role)} replace />
+  }
+
+  return children
+}
+
+function UserRoute({ children }) {
+  const authenticated = useSyncExternalStore(subscribeAuth, getAuthSnapshot, () => false)
+  const { user, loading } = useProfile()
 
   if (!authenticated) {
     return <Navigate to="/login" replace />
   }
+
+  if (loading) {
+    return <RouteLoadingState message="Opening your drive..." />
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (isAdminRole(user.role)) {
+    return <Navigate to="/admin" replace />
+  }
+
+  return children
+}
+
+function AdminRoute({ children }) {
+  const authenticated = useSyncExternalStore(subscribeAuth, getAuthSnapshot, () => false)
+  const { user, loading } = useProfile()
+
+  if (!authenticated) {
+    return <Navigate to="/admin/login" replace />
+  }
+
+  if (loading) {
+    return <RouteLoadingState message="Verifying admin access..." />
+  }
+
+  if (!user) {
+    return <Navigate to="/admin/login" replace />
+  }
+
+  if (!isAdminRole(user.role)) {
+    return <Navigate to="/" replace />
+  }
+
   return children
 }
 
@@ -24,90 +92,128 @@ function App() {
     <ThemeProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Navigate to="/register" replace />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/register"
+            element={(
+              <PublicRoute>
+                <RegisterPage />
+              </PublicRoute>
+            )}
+          />
+          <Route
+            path="/login"
+            element={(
+              <PublicRoute>
+                <LoginPage />
+              </PublicRoute>
+            )}
+          />
+          <Route
+            path="/admin/login"
+            element={(
+              <PublicRoute>
+                <AdminLoginPage />
+              </PublicRoute>
+            )}
+          />
           <Route path="/share/:token" element={<SharePage />} />
+          <Route
+            path="/"
+            element={
+              <UserRoute>
+                <DashboardPage />
+              </UserRoute>
+            }
+          />
           <Route
             path="/dashboard/*"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/drive"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="my-drive" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/recent"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="recent" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/trash"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="bin" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/media"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="media" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/photos"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="media" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/starred"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="starred" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/storage"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <DashboardPage forcedNav="storage" />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/folder/:folderId"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <FolderPage />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
           <Route
             path="/profile"
             element={
-              <ProtectedRoute>
+              <UserRoute>
                 <ProfilePage />
-              </ProtectedRoute>
+              </UserRoute>
             }
           />
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <AdminPage />
+              </AdminRoute>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" />

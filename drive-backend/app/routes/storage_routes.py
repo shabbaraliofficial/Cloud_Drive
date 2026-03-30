@@ -1,8 +1,10 @@
 from __future__ import annotations
 from datetime import datetime
+import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from app.core import config
 from app.database.mongodb import get_database
@@ -17,6 +19,7 @@ from app.utils.storage import ensure_storage_capacity, sync_user_storage_usage
 
 router = APIRouter(prefix="/api/storage", tags=["Storage"])
 s3_service = S3Service()
+logger = logging.getLogger(__name__)
 
 
 async def _get_usage(db: AsyncIOMotorDatabase, user: dict) -> dict:
@@ -62,21 +65,31 @@ async def upload_to_storage(
             folder_id=str(parsed_folder_id) if parsed_folder_id else None,
         )
     except Exception as exc:
+        logger.exception("Storage upload failed: filename=%s user_id=%s", file.filename, current_user.get("_id"))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"S3 upload failed: {exc}") from exc
 
-    result = await db.files.insert_one(
-        build_file_document(
-            filename=file.filename or "unnamed",
-            mime_type=file.content_type or "application/octet-stream",
-            file_size=len(content),
-            owner_id=current_user["_id"],
-            folder_id=parsed_folder_id,
-            file_url=file_url,
+    try:
+        result = await db.files.insert_one(
+            build_file_document(
+                filename=file.filename or "unnamed",
+                mime_type=file.content_type or "application/octet-stream",
+                file_size=len(content),
+                owner_id=current_user["_id"],
+                folder_id=parsed_folder_id,
+                file_url=file_url,
+            )
         )
-    )
 
-    await _get_usage(db, current_user)
-    doc = await db.files.find_one({"_id": result.inserted_id})
+        await _get_usage(db, current_user)
+        doc = await db.files.find_one({"_id": result.inserted_id})
+    except PyMongoError as exc:
+        logger.exception("Failed to persist storage upload metadata: filename=%s user_id=%s", file.filename, current_user.get("_id"))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="File uploaded but metadata could not be saved",
+        ) from exc
+
+    logger.info("Storage upload completed: filename=%s user_id=%s file_id=%s", file.filename, current_user.get("_id"), result.inserted_id)
 
     return {
         "id": str(result.inserted_id),
