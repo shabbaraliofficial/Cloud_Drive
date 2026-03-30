@@ -25,12 +25,20 @@ async def connect_to_mongo() -> None:
     global client, database, database_error
 
     MONGO_URL = config.MONGO_URL
+    logger.info(f"MONGO_URL exists: {bool(MONGO_URL)}")
+
+    if not MONGO_URL:
+        database_error = "MONGO_URL is not set"
+        client = None
+        database = None
+        logger.error(database_error)
+        return
 
     if not MONGO_URL.startswith(("mongodb://", "mongodb+srv://")):
         database_error = "MongoDB URL must be a full MongoDB URI. Set MONGO_URL to a value like mongodb+srv://..."
         client = None
         database = None
-        logger.warning(database_error)
+        logger.error(database_error)
         return
 
     try:
@@ -41,14 +49,14 @@ async def connect_to_mongo() -> None:
                 database = client[config.MONGODB_DB_NAME]
             else:
                 raise ValueError("MONGO_URL must include a database name or set MONGODB_DB_NAME")
-        await database.command("ping")
+        await client.admin.command("ping")
         database_error = None
-        logger.info("MongoDB connected successfully: db=%s", database.name)
+        logger.info("MongoDB connected")
         await ensure_indexes()
         await ensure_admin_user()
     except Exception as exc:
         database_error = str(exc)
-        logger.exception("Failed to connect to MongoDB")
+        logger.error("MongoDB connection failed", exc_info=True)
         if client is not None:
             client.close()
         client = None
@@ -68,7 +76,7 @@ def get_database() -> AsyncIOMotorDatabase:
     if database is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=database_error or "MongoDB is not connected",
+            detail="Database not available",
         )
     return database
 
@@ -76,11 +84,11 @@ def get_database() -> AsyncIOMotorDatabase:
 async def test_mongo_connection() -> dict[str, Any]:
     global database_error
 
-    if database is None:
+    if client is None or database is None:
         return {"ok": 0.0, "error": database_error or "MongoDB is not connected"}
 
     try:
-        result = await database.command("ping")
+        result = await client.admin.command("ping")
         return {
             "ok": float(result.get("ok", 1.0)),
             "database": database.name,

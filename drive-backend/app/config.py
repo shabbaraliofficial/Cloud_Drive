@@ -42,9 +42,6 @@ MONGODB_DB_NAME = _getenv("MONGODB_DB_NAME")
 
 logger.info(f"MONGO_URL exists: {bool(MONGO_URL)}")
 
-if not MONGO_URL:
-    raise ValueError("MONGO_URL is not set")
-
 JWT_SECRET = _getenv("JWT_SECRET", "JWT_SECRET_KEY")
 JWT_SECRET_KEY = JWT_SECRET
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")

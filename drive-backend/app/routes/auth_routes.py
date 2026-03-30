@@ -44,6 +44,7 @@ async def register(
     response: Response,
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> RegisterResponse:
+    logger.info("Register API called")
     existing_email_user = await db.users.find_one({"email": payload.email})
     if existing_email_user:
         is_verified = bool(
@@ -132,6 +133,7 @@ async def verify_otp(payload: VerifyOtpRequest, db: AsyncIOMotorDatabase = Depen
 
 @router.post("/login", response_model=AuthTokenResponse)
 async def login(payload: LoginRequest, db: AsyncIOMotorDatabase = Depends(get_database)) -> AuthTokenResponse:
+    logger.info("Login API called")
     identifier = (payload.username or "").strip()
     user = await db.users.find_one(
         {
