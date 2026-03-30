@@ -228,7 +228,7 @@ function ProfilePage() {
       }))
       setAvatarBuster(Date.now())
     } catch (error) {
-      console.error('Profile load failed', error)
+      if (import.meta.env.DEV) console.error('Profile load failed', error)
       setProfileError(error?.message || 'Unable to load profile')
       toast.error(error?.message || 'Server not reachable')
     } finally {
@@ -245,7 +245,7 @@ function ProfilePage() {
       setBackupEnabled(Boolean(settings?.backup_enabled))
       setBackupDevices(Array.isArray(settings?.devices) ? settings.devices : [])
     } catch (error) {
-      console.error('Backup settings load failed', error)
+      if (import.meta.env.DEV) console.error('Backup settings load failed', error)
       toast.error(error?.message || 'Unable to load backup settings')
     } finally {
       setBackupLoading(false)
@@ -272,7 +272,7 @@ function ProfilePage() {
       setBackupDevices(Array.isArray(settings?.devices) ? settings.devices : [])
       toast.success(value ? 'Backup enabled' : 'Backup paused')
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       toast.error(error?.message || 'Failed to update backup settings')
     } finally {
       setBackupLoading(false)
@@ -308,7 +308,7 @@ function ProfilePage() {
       await loadProfile()
       toast.success('Profile saved successfully')
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       toast.error(error.message || 'Failed to update profile')
     }
   }
@@ -326,7 +326,7 @@ function ProfilePage() {
       setSecurityForm((prev) => ({ ...prev, old_password: '', new_password: '' }))
       toast.success('Password changed successfully')
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       toast.error(error.message || 'Failed to change password')
     }
   }
@@ -343,7 +343,7 @@ function ProfilePage() {
       }))
       toast.success(value ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled')
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       toast.error(error.message || 'Failed to update security settings')
     }
   }
@@ -359,7 +359,7 @@ function ProfilePage() {
       setAvatarBuster(Date.now())
       toast.success('Profile photo uploaded successfully')
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       toast.error(error.message || 'Failed to upload photo')
     }
   }
@@ -428,7 +428,7 @@ function ProfilePage() {
         checkout.open()
       })
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       if (error?.message === 'Payment cancelled by user') {
         toast.warning('Payment cancelled')
       } else {

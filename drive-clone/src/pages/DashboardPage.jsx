@@ -840,7 +840,7 @@ function DashboardContent({
   const showBinSearchResults = hasActiveSearch && searchFilters.inBin
 
   const handleAsyncError = useCallback((error, fallbackMessage) => {
-    console.error(error)
+    if (import.meta.env.DEV) console.error(error)
     if (isAuthFailure(error)) {
       clearAuthTokens()
       navigate('/login', { replace: true })
@@ -1799,7 +1799,7 @@ function DashboardPage({ forcedFolderId = null, forcedNav = null }) {
   }, [])
 
   const onAuthError = (error) => {
-    console.error('Dashboard error:', error)
+    if (import.meta.env.DEV) console.error('Dashboard error:', error)
     if (isAuthFailure(error)) {
       clearAuthTokens()
       navigate('/login', { replace: true })

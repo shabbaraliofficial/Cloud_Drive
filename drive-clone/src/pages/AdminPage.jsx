@@ -379,7 +379,7 @@ function AdminPage() {
   const selectedProfileUserId = selectedUserProfile?.user?.id || ''
 
   const handleAdminError = useCallback((err, fallbackMessage) => {
-    console.error('Admin error:', err)
+    if (import.meta.env.DEV) console.error('Admin error:', err)
     if (isAdminAccessFailure(err)) {
       clearAuthTokens()
       navigate('/admin/login', { replace: true })
@@ -419,7 +419,7 @@ function AdminPage() {
       const analyticsRes = await api.getAdminAnalytics()
       setAnalytics(analyticsRes || EMPTY_ANALYTICS)
     } catch (err) {
-      console.error('Admin analytics error:', err)
+      if (import.meta.env.DEV) console.error('Admin analytics error:', err)
       if (isAdminAccessFailure(err)) {
         clearAuthTokens()
         navigate('/admin/login', { replace: true })

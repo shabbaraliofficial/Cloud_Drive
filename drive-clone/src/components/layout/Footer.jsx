@@ -23,7 +23,7 @@ function Footer() {
           setUsage(data || null)
         }
       } catch (error) {
-        console.error('Failed to fetch storage usage:', error)
+        if (import.meta.env.DEV) console.error('Failed to fetch storage usage:', error)
       }
     }
 

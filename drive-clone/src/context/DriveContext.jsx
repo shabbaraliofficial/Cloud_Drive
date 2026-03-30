@@ -107,7 +107,7 @@ function DriveProvider({ children, selectedNav, folderId, onAuthError }) {
         if (onAuthError) {
           onAuthError(error)
         } else {
-          console.error(error)
+          if (import.meta.env.DEV) console.error(error)
         }
       } finally {
         if (active) setLoading(false)

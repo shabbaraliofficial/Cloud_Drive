@@ -41,7 +41,7 @@ function Header({
       refreshProfile(),
       api.getStorageUsage().then(setStorage),
     ]).catch((error) => {
-      console.error('Failed to refresh profile menu:', error)
+      if (import.meta.env.DEV) console.error('Failed to refresh profile menu:', error)
     })
   }, [open, refreshProfile])
 
@@ -62,7 +62,7 @@ function Header({
     try {
       await api.logout()
     } catch (error) {
-      console.error('Logout failed:', error)
+      if (import.meta.env.DEV) console.error('Logout failed:', error)
     }
     clearAuthTokens()
     navigate('/login', { replace: true })

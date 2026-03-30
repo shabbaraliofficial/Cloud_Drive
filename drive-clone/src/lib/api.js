@@ -1,7 +1,8 @@
 import { clearAuthTokens, getAccessToken, getRefreshToken, setAuthTokens } from './auth'
+import { toast } from './popup'
 import { normalizeStoragePayload } from './storage'
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+export const BASE_URL = (import.meta.env.VITE_API_URL || 'https://cloud-drive-l02z.onrender.com').replace(/\/+$/, '')
 export const CHUNK_SIZE = 5 * 1024 * 1024
 
 const MULTIPART_THRESHOLD = 25 * 1024 * 1024
@@ -9,12 +10,74 @@ const MAX_RESUMABLE_FILE_SIZE = 10 * 1024 * 1024 * 1024
 const UPLOAD_SESSIONS_STORAGE_KEY = 'drive.multipart-upload-sessions'
 let refreshRequest = null
 
+function createApiError(message, status = null, options = {}) {
+  const error = new Error(message)
+  error.status = status
+  error.notified = Boolean(options.notified)
+  error.redirected = Boolean(options.redirected)
+  return error
+}
+
+export function resolveApiUrl(path = '') {
+  if (!path) return BASE_URL
+  return `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function isBrowser() {
+  return typeof window !== 'undefined'
+}
+
+function getLoginRoute() {
+  if (!isBrowser()) return '/login'
+  return window.location.pathname.startsWith('/admin') ? '/admin/login' : '/login'
+}
+
+function notifyNetworkError(message = 'Network error. Unable to reach the backend right now.') {
+  toast.error(message, {
+    id: 'network-error',
+    title: 'Network error',
+  })
+  return createApiError(message, 0, { notified: true })
+}
+
+function notifyServerError(message = 'Server error. Please try again in a moment.', status = 500) {
+  toast.error(message, {
+    id: `server-error-${status}`,
+    title: 'Server error',
+  })
+  return createApiError(message, status, { notified: true })
+}
+
+function handleUnauthorized(message = 'Session expired. Please log in again.') {
+  clearAuthTokens()
+  toast.warning(message, {
+    id: 'auth-error',
+    title: 'Authentication required',
+  })
+
+  if (isBrowser()) {
+    const target = getLoginRoute()
+    if (window.location.pathname !== target) {
+      window.location.assign(target)
+    }
+  }
+
+  return createApiError(message, 401, { notified: true, redirected: true })
+}
+
+async function parseJsonResponse(response) {
+  try {
+    return await response.json()
+  } catch {
+    return null
+  }
+}
+
 function getRequestToken(authMode) {
   const token = getAccessToken()
   if (authMode === true || authMode === 'required') {
     if (!token) {
-      clearAuthTokens()
-      throw new Error('Missing bearer token. Please log in again.')
+      throw handleUnauthorized('Please log in to continue.')
     }
     return token
   }
@@ -33,11 +96,10 @@ async function refreshAccessToken() {
 
   const refreshToken = getRefreshToken()
   if (!refreshToken) {
-    clearAuthTokens()
-    throw new Error('Session expired. Please log in again.')
+    throw handleUnauthorized('Session expired. Please log in again.')
   }
 
-  refreshRequest = fetch(`${API_BASE_URL}/api/auth/refresh`, {
+  refreshRequest = fetch(resolveApiUrl('/api/auth/refresh'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -45,23 +107,33 @@ async function refreshAccessToken() {
     body: JSON.stringify({ refresh_token: refreshToken }),
   })
     .then(async (response) => {
-      let data = null
-      try {
-        data = await response.json()
-      } catch {
-        data = null
-      }
+      const data = await parseJsonResponse(response)
 
       if (!response.ok || !data?.access_token) {
-        throw new Error(data?.detail || data?.message || 'Session expired. Please log in again.')
+        const message = data?.detail || data?.message || 'Session expired. Please log in again.'
+
+        if (response.status === 401) {
+          throw createApiError(message, 401)
+        }
+
+        if (response.status >= 500) {
+          throw notifyServerError(message, response.status)
+        }
+
+        throw createApiError(message, response.status || 400)
       }
 
       setAuthTokens(data.access_token, data.refresh_token || refreshToken)
       return data.access_token
     })
     .catch((error) => {
-      clearAuthTokens()
-      throw error
+      if (error?.status === 401) {
+        throw handleUnauthorized(error.message || 'Session expired. Please log in again.')
+      }
+      if (error?.status) {
+        throw error
+      }
+      throw notifyNetworkError('Network error. Unable to refresh your session.')
     })
     .finally(() => {
       refreshRequest = null
@@ -151,12 +223,12 @@ async function request(path, options = {}, authMode = false, allowRefresh = true
 
   let response
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    response = await fetch(resolveApiUrl(path), {
       ...options,
       headers,
     })
   } catch {
-    throw new Error(`Backend unreachable at ${API_BASE_URL}`)
+    throw notifyNetworkError('Network error. Unable to reach the backend.')
   }
 
   const canAttemptRefresh = allowRefresh
@@ -166,22 +238,28 @@ async function request(path, options = {}, authMode = false, allowRefresh = true
     && getRefreshToken()
 
   if (canAttemptRefresh) {
-    await refreshAccessToken()
-    return request(path, options, authMode, false)
+    try {
+      await refreshAccessToken()
+      return request(path, options, authMode, false)
+    } catch (error) {
+      throw error
+    }
   }
 
-  let data = null
-  try {
-    data = await response.json()
-  } catch {
-    data = null
-  }
+  const data = await parseJsonResponse(response)
 
   if (!response.ok) {
-    if (response.status === 401) {
-      clearAuthTokens()
+    const message = data?.detail || data?.message || 'Request failed'
+
+    if (response.status === 401 && (authMode === true || authMode === 'required' || authMode === 'optional')) {
+      throw handleUnauthorized(message || 'Session expired. Please log in again.')
     }
-    throw new Error(data?.detail || data?.message || 'Request failed')
+
+    if (response.status >= 500) {
+      throw notifyServerError(message, response.status)
+    }
+
+    throw createApiError(message, response.status)
   }
 
   return data
@@ -203,12 +281,12 @@ async function requestBlob(path, options = {}, authMode = false, allowRefresh = 
 
   let response
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    response = await fetch(resolveApiUrl(path), {
       ...options,
       headers,
     })
   } catch {
-    throw new Error(`Backend unreachable at ${API_BASE_URL}`)
+    throw notifyNetworkError('Network error. Unable to reach the backend.')
   }
 
   const canAttemptRefresh = allowRefresh
@@ -218,22 +296,27 @@ async function requestBlob(path, options = {}, authMode = false, allowRefresh = 
     && getRefreshToken()
 
   if (canAttemptRefresh) {
-    await refreshAccessToken()
-    return requestBlob(path, options, authMode, false)
+    try {
+      await refreshAccessToken()
+      return requestBlob(path, options, authMode, false)
+    } catch (error) {
+      throw error
+    }
   }
 
   if (!response.ok) {
-    let data = null
-    try {
-      data = await response.json()
-    } catch {
-      data = null
+    const data = await parseJsonResponse(response)
+    const message = data?.detail || data?.message || 'Request failed'
+
+    if (response.status === 401 && (authMode === true || authMode === 'required' || authMode === 'optional')) {
+      throw handleUnauthorized(message || 'Session expired. Please log in again.')
     }
 
-    if (response.status === 401) {
-      clearAuthTokens()
+    if (response.status >= 500) {
+      throw notifyServerError(message, response.status)
     }
-    throw new Error(data?.detail || data?.message || 'Request failed')
+
+    throw createApiError(message, response.status)
   }
 
   return {
@@ -263,7 +346,7 @@ function uploadDirectFile(file, folderId = null, onProgress) {
       formData.append('folder_id', folderId)
     }
 
-    xhr.open('POST', `${API_BASE_URL}/api/files/upload`)
+    xhr.open('POST', resolveApiUrl('/api/files/upload'))
     xhr.setRequestHeader('Authorization', `Bearer ${token}`)
 
     xhr.upload.onprogress = (event) => {
@@ -295,14 +378,23 @@ function uploadDirectFile(file, folderId = null, onProgress) {
         return
       }
 
+      const message = data?.detail || data?.message || 'File upload failed'
+
       if (xhr.status === 401) {
-        clearAuthTokens()
+        reject(handleUnauthorized(message))
+        return
       }
-      reject(new Error(data?.detail || data?.message || 'File upload failed'))
+
+      if (xhr.status >= 500) {
+        reject(notifyServerError(message, xhr.status))
+        return
+      }
+
+      reject(createApiError(message, xhr.status))
     }
 
     xhr.onerror = () => {
-      reject(new Error('File upload failed'))
+      reject(notifyNetworkError('Network error. File upload failed.'))
     }
 
     xhr.send(formData)
@@ -326,17 +418,22 @@ function uploadBlobToPresignedUrl(uploadUrl, blob, contentType, onProgress) {
       if (xhr.status >= 200 && xhr.status < 300) {
         const etag = xhr.getResponseHeader('ETag')
         if (!etag) {
-          reject(new Error('S3 part upload succeeded but did not return ETag. Expose ETag in your bucket CORS settings.'))
+          reject(createApiError('S3 part upload succeeded but did not return ETag. Expose ETag in your bucket CORS settings.'))
           return
         }
         resolve({ etag })
         return
       }
 
-      reject(new Error('Direct S3 upload failed'))
+      if (xhr.status >= 500) {
+        reject(notifyServerError('Direct upload failed on the server.', xhr.status))
+        return
+      }
+
+      reject(createApiError('Direct S3 upload failed', xhr.status))
     }
 
-    xhr.onerror = () => reject(new Error('Direct S3 upload failed'))
+    xhr.onerror = () => reject(notifyNetworkError('Network error. Direct upload failed.'))
     xhr.send(blob)
   })
 }
@@ -835,24 +932,10 @@ export const api = {
   },
 
   uploadProfilePhoto(formData) {
-    const token = getAccessToken()
-    if (!token) {
-      clearAuthTokens()
-      return Promise.reject(new Error('Missing bearer token. Please log in again.'))
-    }
-    return fetch(`${API_BASE_URL}/api/profile/upload-photo`, {
+    return request('/api/profile/upload-photo', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
       body: formData,
-    }).then(async (res) => {
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data?.detail || data?.message || 'Profile photo upload failed')
-      }
-      return data
-    })
+    }, true)
   },
 
   getStorageUsage() {

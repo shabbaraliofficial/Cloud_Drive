@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import ReactPlayer from 'react-player'
 
-import { API_BASE_URL } from '../../lib/api'
+import { resolveApiUrl } from '../../lib/api'
 import { clearAuthTokens, getAccessToken } from '../../lib/auth'
 import { detectFileKind, toAbsoluteFileUrl } from '../../lib/filePreview'
+import { toast } from '../../lib/popup'
 
 function FilePreviewModal({ open, file, onClose, previewBasePath = '/api/files' }) {
   const [loading, setLoading] = useState(false)
@@ -25,9 +26,10 @@ function FilePreviewModal({ open, file, onClose, previewBasePath = '/api/files' 
         const token = getAccessToken()
         if (!token) {
           clearAuthTokens()
+          window.location.assign(window.location.pathname.startsWith('/admin') ? '/admin/login' : '/login')
           throw new Error('Missing bearer token. Please log in again.')
         }
-        const response = await fetch(`${API_BASE_URL}${previewBasePath}/${file.id}/preview`, {
+        const response = await fetch(resolveApiUrl(`${previewBasePath}/${file.id}/preview`), {
           method: 'GET',
           headers: { Authorization: `Bearer ${token}` },
         })
@@ -38,6 +40,13 @@ function FilePreviewModal({ open, file, onClose, previewBasePath = '/api/files' 
             data = await response.json()
           } catch {
             data = null
+          }
+          if (response.status === 401) {
+            clearAuthTokens()
+            toast.warning('Session expired. Please log in again.', { title: 'Authentication required' })
+            window.location.assign(window.location.pathname.startsWith('/admin') ? '/admin/login' : '/login')
+          } else if (response.status >= 500) {
+            toast.error(data?.detail || data?.message || 'Preview failed on the server.', { title: 'Server error' })
           }
           throw new Error(data?.detail || data?.message || 'Preview failed')
         }
@@ -75,6 +84,9 @@ function FilePreviewModal({ open, file, onClose, previewBasePath = '/api/files' 
           size: blob.size,
         })
       } catch (err) {
+        if (err instanceof TypeError) {
+          toast.error('Network error. Unable to load the preview.', { title: 'Network error' })
+        }
         if (active) {
           setError(err.message || 'Preview failed')
         }

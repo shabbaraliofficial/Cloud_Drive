@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Apple, Chrome, Facebook, ShieldCheck } from 'lucide-react'
 import AuthShell from '../components/auth/AuthShell'
 import AuthInput from '../components/auth/AuthInput'
-import { api } from '../lib/api'
+import { api, resolveApiUrl } from '../lib/api'
 import { clearAuthTokens, setAuthTokens } from '../lib/auth'
 import { getHomeRouteForRole } from '../lib/roleRoutes'
 
@@ -100,7 +100,7 @@ function LoginPage() {
   }
 
   const loginWithGoogle = () => {
-    window.location.href = 'http://localhost:8000/api/auth/google/login'
+    window.location.href = resolveApiUrl('/api/auth/google/login')
   }
 
   const socialLogin = async (provider) => {

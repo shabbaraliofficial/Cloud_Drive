@@ -544,7 +544,7 @@ function QuickActions({ selectedFolderId, onRefresh }) {
       await onRefresh?.()
       toast.success(`Folder "${trimmedName}" created`)
     } catch (error) {
-      console.error(error)
+      if (import.meta.env.DEV) console.error(error)
       toast.error(error.message || 'Failed to create folder')
     } finally {
       setCreatingFolder(false)

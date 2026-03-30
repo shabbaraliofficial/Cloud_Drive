@@ -30,7 +30,7 @@ function useProfile() {
     }
 
     refreshProfile().catch((error) => {
-      console.error('Failed to fetch profile:', error)
+      if (import.meta.env.DEV) console.error('Failed to fetch profile:', error)
       setUser(null)
     })
     return undefined

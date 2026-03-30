@@ -56,7 +56,7 @@ function AdminLayout({
       setLoggingOut(true)
       await api.logout()
     } catch (error) {
-      console.error('Admin logout failed:', error)
+      if (import.meta.env.DEV) console.error('Admin logout failed:', error)
     } finally {
       clearAuthTokens()
       navigate('/admin/login', { replace: true })
