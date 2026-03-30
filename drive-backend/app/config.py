@@ -37,8 +37,7 @@ APP_DEBUG = _getenv_bool("APP_DEBUG", False)
 HOST = _getenv("HOST", default="0.0.0.0")
 PORT = int(_getenv("PORT", default="10000"))
 
-MONGO_URL = _getenv("MONGO_URL", "MONGODB_URL")
-MONGODB_URL = MONGO_URL
+MONGO_URL = os.getenv("MONGO_URL")
 MONGODB_DB_NAME = _getenv("MONGODB_DB_NAME")
 
 JWT_SECRET = _getenv("JWT_SECRET", "JWT_SECRET_KEY")
@@ -103,7 +102,7 @@ else:
     logger.info("No .env file found. Using environment variables from the host instead.")
 
 logger.info("Render host/port configured: %s:%s", HOST, PORT)
-logger.info("Mongo URL configured: %s", bool(MONGODB_URL))
+logger.info("Mongo URL configured: %s", bool(MONGO_URL))
 logger.info("Mongo DB name configured: %s", bool(MONGODB_DB_NAME))
 logger.info("JWT secret configured: %s", bool(JWT_SECRET_KEY))
 logger.info("AWS bucket configured: %s", bool(AWS_BUCKET_NAME))

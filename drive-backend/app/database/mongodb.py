@@ -35,15 +35,24 @@ def _resolve_database_name(resolved_client: AsyncIOMotorClient) -> str:
 async def connect_to_mongo() -> None:
     global client, database, database_error
 
-    if not config.MONGODB_URL:
+    MONGO_URL = config.MONGO_URL
+
+    if not MONGO_URL:
         database_error = "MongoDB URL is not configured. Set MONGO_URL on the host."
         client = None
         database = None
         logger.warning(database_error)
         return
 
+    if not MONGO_URL.startswith(("mongodb://", "mongodb+srv://")):
+        database_error = "MongoDB URL must be a full MongoDB URI. Set MONGO_URL to a value like mongodb+srv://..."
+        client = None
+        database = None
+        logger.warning(database_error)
+        return
+
     try:
-        client = AsyncIOMotorClient(config.MONGODB_URL, serverSelectionTimeoutMS=5000)
+        client = AsyncIOMotorClient(MONGO_URL)
         database = client[_resolve_database_name(client)]
         await database.command("ping")
         database_error = None
