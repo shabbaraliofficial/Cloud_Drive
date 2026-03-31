@@ -82,7 +82,7 @@ app.add_middleware(
 
 logger.info("CORS allow_origins: %s", CORS_ORIGINS)
 
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
 app.include_router(profile_router)
 
 uploads_dir = Path(__file__).resolve().parents[1] / "uploads"

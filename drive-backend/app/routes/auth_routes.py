@@ -30,8 +30,9 @@ from app.utils.mongo_helpers import parse_object_id
 from app.utils.oauth_config import oauth
 from app.utils.plans import build_plan_update
 
-router = APIRouter(prefix="/api/auth", tags=["Authentication"])
-debug_router = APIRouter(prefix="/api/debug", tags=["Debug"])
+auth_router = APIRouter()
+debug_router = APIRouter(prefix="/debug", tags=["Debug"])
+router = auth_router
 logger = logging.getLogger(__name__)
 
 GOOGLE_REDIRECT_URI = config.GOOGLE_REDIRECT_URI or os.getenv("GOOGLE_REDIRECT_URI", "")
