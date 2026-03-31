@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
-from pymongo.errors import PyMongoError
+from pymongo.errors import ConfigurationError, PyMongoError
 
 from app.core import config
 from app.utils.password_handler import hash_password
@@ -24,17 +24,17 @@ database_error: str | None = "MongoDB is not connected"
 async def connect_to_mongo() -> None:
     global client, database, database_error
 
-    MONGO_URL = config.MONGO_URL
-    logger.info(f"MONGO_URL exists: {bool(MONGO_URL)}")
+    mongo_url = str(config.MONGO_URL or "").strip()
+    logger.info("MONGO_URL exists: %s", bool(mongo_url))
 
-    if not MONGO_URL:
+    if not mongo_url:
         database_error = "MONGO_URL is not set"
         client = None
         database = None
         logger.error(database_error)
         return
 
-    if not MONGO_URL.startswith(("mongodb://", "mongodb+srv://")):
+    if not mongo_url.startswith(("mongodb://", "mongodb+srv://")):
         database_error = "MongoDB URL must be a full MongoDB URI. Set MONGO_URL to a value like mongodb+srv://..."
         client = None
         database = None
@@ -42,8 +42,12 @@ async def connect_to_mongo() -> None:
         return
 
     try:
-        client = AsyncIOMotorClient(MONGO_URL)
-        database = client.get_default_database()
+        client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=10000)
+        try:
+            database = client.get_default_database()
+        except ConfigurationError:
+            database = None
+
         if database is None:
             if config.MONGODB_DB_NAME:
                 database = client[config.MONGODB_DB_NAME]

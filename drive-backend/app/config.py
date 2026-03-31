@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-ENV_PATH = BASE_DIR / ".env"
-REPO_ENV_PATH = BASE_DIR.parent / ".env"
 DEFAULT_ALLOWED_MIME_TYPES = (
     "image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,"
     "video/quicktime,application/pdf,text/plain,application/zip"
@@ -26,6 +22,13 @@ def _clean_text(value: str | None, default: str = "") -> str:
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _clean_mongo_url(value: str | None) -> str | None:
+    cleaned = _clean_text(value)
+    if cleaned.upper().startswith("MONGO_URL="):
+        cleaned = cleaned.split("=", 1)[1].strip()
+    return cleaned or None
 
 
 class Settings(BaseSettings):
@@ -76,8 +79,6 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = ""
 
     model_config = SettingsConfigDict(
-        env_file=(ENV_PATH, REPO_ENV_PATH),
-        env_file_encoding="utf-8",
         env_ignore_empty=True,
         extra="ignore",
     )
@@ -91,7 +92,7 @@ APP_DEBUG = bool(settings.APP_DEBUG)
 HOST = _clean_text(settings.HOST, "0.0.0.0")
 PORT = int(settings.PORT)
 
-MONGO_URL = _clean_text(settings.MONGO_URL) or None
+MONGO_URL = _clean_mongo_url(settings.MONGO_URL)
 MONGODB_DB_NAME = _clean_text(settings.MONGODB_DB_NAME)
 
 JWT_SECRET = _clean_text(settings.JWT_SECRET) or _clean_text(settings.JWT_SECRET_KEY)
@@ -149,13 +150,7 @@ RAZORPAY_KEY_SECRET = _clean_text(settings.RAZORPAY_KEY_SECRET)
 FRONTEND_URL = _clean_text(settings.FRONTEND_URL, "http://localhost:5173")
 GOOGLE_REDIRECT_URI = _clean_text(settings.GOOGLE_REDIRECT_URI)
 
-if ENV_PATH.exists():
-    logger.info("Loaded backend environment from %s", ENV_PATH)
-elif REPO_ENV_PATH.exists():
-    logger.info("Loaded repository environment from %s", REPO_ENV_PATH)
-else:
-    logger.info("No .env file found. Using host environment variables only.")
-
+print(f"[config] MONGO_URL loaded={bool(MONGO_URL)}")
 logger.info("Render host/port configured: %s:%s", HOST, PORT)
 logger.info("Mongo URL configured: %s", bool(MONGO_URL))
 logger.info("Mongo DB name configured: %s", bool(MONGODB_DB_NAME))
