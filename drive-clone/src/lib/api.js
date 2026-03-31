@@ -2,7 +2,7 @@ import { clearAuthTokens, getAccessToken, getRefreshToken, setAuthTokens } from 
 import { toast } from './popup'
 import { normalizeStoragePayload } from './storage'
 
-export const BASE_URL = (import.meta.env.VITE_API_URL || 'https://cloud-drive-l02z.onrender.com').replace(/\/+$/, '')
+export const BASE_URL = 'https://cloud-drive-l02z.onrender.com'
 export const CHUNK_SIZE = 5 * 1024 * 1024
 
 const MULTIPART_THRESHOLD = 25 * 1024 * 1024
@@ -653,39 +653,39 @@ export const api = {
   },
 
   getAdminStats() {
-    return request('/admin/stats', { method: 'GET' }, true)
+    return request('/api/admin/stats', { method: 'GET' }, true)
   },
 
   getAdminAnalytics() {
-    return request('/admin/analytics', { method: 'GET' }, true)
+    return request('/api/admin/analytics', { method: 'GET' }, true)
   },
 
   getAdminUsers() {
-    return request('/admin/users', { method: 'GET' }, true)
+    return request('/api/admin/users', { method: 'GET' }, true)
   },
 
   getAdminUserProfile(userId) {
-    return request(`/admin/user/${userId}`, { method: 'GET' }, true)
+    return request(`/api/admin/user/${userId}`, { method: 'GET' }, true)
   },
 
   deleteAdminUser(userId) {
-    return request(`/admin/user/${userId}`, { method: 'DELETE' }, true)
+    return request(`/api/admin/user/${userId}`, { method: 'DELETE' }, true)
   },
 
   toggleAdminUserBan(userId) {
-    return request(`/admin/user/${userId}/ban`, { method: 'PATCH' }, true)
+    return request(`/api/admin/user/${userId}/ban`, { method: 'PATCH' }, true)
   },
 
   removeAdminUserPremium(userId) {
-    return request(`/admin/user/${userId}/plan/free`, { method: 'PATCH' }, true)
+    return request(`/api/admin/user/${userId}/plan/free`, { method: 'PATCH' }, true)
   },
 
   getAdminFiles() {
-    return request('/admin/files', { method: 'GET' }, true)
+    return request('/api/admin/files', { method: 'GET' }, true)
   },
 
   deleteAdminFile(fileId) {
-    return request(`/admin/file/${fileId}`, { method: 'DELETE' }, true)
+    return request(`/api/admin/file/${fileId}`, { method: 'DELETE' }, true)
   },
 
   createOrder(payload) {
