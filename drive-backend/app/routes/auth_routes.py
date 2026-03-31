@@ -153,18 +153,37 @@ async def verify_otp(payload: VerifyOtpRequest, db: AsyncIOMotorDatabase = Depen
 
 
 @router.post("/login", response_model=AuthTokenResponse)
-async def login(payload: LoginRequest, db: AsyncIOMotorDatabase = Depends(get_database)) -> AuthTokenResponse:
+async def login(payload: dict[str, str], db: AsyncIOMotorDatabase = Depends(get_database)) -> AuthTokenResponse:
     logger.info("Login API called")
-    identifier = (payload.username or "").strip()
+
+    identifier = str(payload.get("email") or payload.get("username") or "").strip()
+    normalized_identifier = identifier.lower()
+    password = str(payload.get("password") or "")
+
+    if not normalized_identifier or not password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email and password are required")
+
     user = await db.users.find_one(
         {
             "$or": [
+                {"email": normalized_identifier},
                 {"username": identifier},
-                {"email": identifier},
+                {"username": normalized_identifier},
             ]
         }
     )
-    if not user or not verify_password(payload.password, user["password_hash"]):
+
+    password_hash = str((user or {}).get("password_hash") or "")
+    if not user or not password_hash:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    try:
+        password_valid = verify_password(password, password_hash)
+    except Exception:
+        logger.warning("Password verification failed because the stored hash is invalid: user_id=%s", user.get("_id"))
+        password_valid = False
+
+    if not password_valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     if (
@@ -187,16 +206,37 @@ async def login(payload: LoginRequest, db: AsyncIOMotorDatabase = Depends(get_da
         assert user is not None
 
     try:
-        access_token = create_access_token(str(user["_id"]), extra={"username": user["username"]})
-        refresh_token = create_refresh_token(str(user["_id"]), extra={"username": user["username"]})
+        access_token = create_access_token(
+            str(user["_id"]),
+            extra={
+                "email": user.get("email", ""),
+                "username": user.get("username", ""),
+            },
+        )
+        refresh_token = create_refresh_token(
+            str(user["_id"]),
+            extra={
+                "email": user.get("email", ""),
+                "username": user.get("username", ""),
+            },
+        )
     except RuntimeError as exc:
         logger.exception("JWT configuration error during login")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication service is not configured",
         ) from exc
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"last_login": datetime.utcnow(), "updated_at": datetime.utcnow()}})
-    return AuthTokenResponse(access_token=access_token, refresh_token=refresh_token)
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"last_login": datetime.utcnow(), "updated_at": datetime.utcnow()}},
+    )
+
+    return AuthTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+    )
 
 
 @router.post("/refresh", response_model=AuthTokenResponse)

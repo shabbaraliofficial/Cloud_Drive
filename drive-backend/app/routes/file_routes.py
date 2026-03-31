@@ -338,22 +338,54 @@ async def upload_file(
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> FileResponse:
-    logger.info(
-        "Received upload request: filename=%s content_type=%s folder_id=%s user_id=%s",
-        file.filename,
-        file.content_type,
-        folder_id,
-        current_user.get("_id"),
-    )
-    content, file_size = await _validate_upload(file)
-    await ensure_storage_capacity(db, current_user, file_size)
-    parsed_folder_id = parse_object_id(folder_id, "Invalid folder id") if folder_id else None
-    if parsed_folder_id:
-        folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
-        await ensure_folder_write_access(db, folder, current_user)
+    file_url: str | None = None
+    thumbnail_url: str | None = None
 
-    safe_name = normalize_file_name(file.filename)
     try:
+        if file is None or not isinstance(file, UploadFile):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No file uploaded")
+
+        filename = (file.filename or "").strip()
+        if not filename:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Filename is required")
+
+        logger.info(
+            "Received upload request: filename=%s content_type=%s folder_id=%s user_id=%s",
+            filename,
+            file.content_type,
+            folder_id,
+            current_user.get("_id"),
+        )
+
+        content, file_size = await _validate_upload(file)
+        if file_size <= 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
+
+        await ensure_storage_capacity(db, current_user, file_size)
+
+        parsed_folder_id = parse_object_id(folder_id, "Invalid folder id") if folder_id else None
+        if parsed_folder_id:
+            folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
+            await ensure_folder_write_access(db, folder, current_user)
+
+        if config.AWS_S3_BUCKET:
+            if not s3_service.bucket:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="S3 bucket is not configured",
+                )
+            if not s3_service.region:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AWS region is not configured",
+                )
+            if not s3_service.credentials:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AWS credentials are not configured",
+                )
+
+        safe_name = normalize_file_name(filename)
         file_url = await s3_service.upload_bytes(
             content=content,
             content_type=file.content_type or "application/octet-stream",
@@ -361,26 +393,26 @@ async def upload_file(
             owner_id=str(current_user["_id"]),
             folder_id=str(parsed_folder_id) if parsed_folder_id else None,
         )
-        s3_key = s3_service.extract_key(file_url) if s3_service.enabled else None
-    except Exception as exc:
-        logger.exception(
-            "Upload to storage failed: filename=%s user_id=%s",
-            file.filename,
-            current_user.get("_id"),
-        )
-        if isinstance(exc, HTTPException):
-            raise exc
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"File upload failed: {exc}") from exc
-    thumbnail_url = await s3_service.create_thumbnail(
-        content=content,
-        mime_type=file.content_type or "application/octet-stream",
-        owner_id=str(current_user["_id"]),
-        folder_id=str(parsed_folder_id) if parsed_folder_id else None,
-    )
-    try:
+        s3_key = s3_service.extract_key(file_url) if s3_service.enabled and file_url else None
+
+        try:
+            thumbnail_url = await s3_service.create_thumbnail(
+                content=content,
+                mime_type=file.content_type or "application/octet-stream",
+                owner_id=str(current_user["_id"]),
+                folder_id=str(parsed_folder_id) if parsed_folder_id else None,
+            )
+        except Exception:
+            logger.exception(
+                "Thumbnail generation failed: filename=%s user_id=%s",
+                filename,
+                current_user.get("_id"),
+            )
+            thumbnail_url = None
+
         doc = await _create_or_version_file(
             db,
-            filename=file.filename or "unnamed",
+            filename=filename,
             mime_type=file.content_type or "application/octet-stream",
             file_size=file_size,
             owner_id=current_user["_id"],
@@ -391,20 +423,49 @@ async def upload_file(
         )
         await _recalc_storage(db, current_user["_id"])
         await _log_activity(db, current_user["_id"], "upload", doc["_id"], {"source": "direct"})
+
+        logger.info(
+            "Upload completed: file_id=%s url=%s size_bytes=%s storage_mode=%s",
+            doc["_id"],
+            file_url,
+            file_size,
+            "s3" if s3_service.enabled else "local",
+        )
+        return serialize_file(doc)
+    except HTTPException as exc:
+        logger.warning(
+            "Upload request failed: filename=%s user_id=%s status=%s detail=%s",
+            getattr(file, "filename", None),
+            current_user.get("_id"),
+            exc.status_code,
+            exc.detail,
+        )
+        raise
     except PyMongoError as exc:
-        logger.exception("Failed to persist uploaded file metadata: filename=%s user_id=%s", file.filename, current_user.get("_id"))
+        logger.exception(
+            "Failed to persist uploaded file metadata: filename=%s user_id=%s",
+            getattr(file, "filename", None),
+            current_user.get("_id"),
+        )
+        if file_url:
+            try:
+                await s3_service.delete_object(file_url)
+            except Exception:
+                logger.exception("Failed to clean up uploaded file after metadata save error: file_url=%s", file_url)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="File uploaded but metadata could not be saved",
         ) from exc
-    logger.info(
-        "Upload completed: file_id=%s url=%s size_bytes=%s storage_mode=%s",
-        doc["_id"],
-        file_url,
-        file_size,
-        "s3" if s3_service.enabled else "local",
-    )
-    return serialize_file(doc)
+    except Exception as exc:
+        logger.exception(
+            "Unexpected upload error: filename=%s user_id=%s",
+            getattr(file, "filename", None),
+            current_user.get("_id"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="File upload failed",
+        ) from exc
 
 
 @router.post("/upload-folder", response_model=list[FileResponse])
