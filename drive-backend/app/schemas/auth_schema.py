@@ -1,16 +1,39 @@
 from __future__ import annotations
 from datetime import date
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     full_name: str = Field(min_length=2, max_length=120)
     date_of_birth: date
-    email: EmailStr
+    email: EmailStr | None = None
     mobile_number: str = Field(min_length=8, max_length=20)
-    username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=8, max_length=128)
+    username: str | None = Field(default=None, min_length=3, max_length=120)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+
+        payload = dict(data)
+        if not payload.get("email") and payload.get("username"):
+            payload["email"] = payload["username"]
+        if not payload.get("password") and payload.get("pass") is not None:
+            payload["password"] = payload["pass"]
+        return payload
+
+    @model_validator(mode="after")
+    def validate_required_fields(self) -> "RegisterRequest":
+        if not self.email and not self.username:
+            raise ValueError("Either email or username is required")
+        if not self.password:
+            raise ValueError("Either password or pass is required")
+        return self
 
 
 class RegisterResponse(BaseModel):

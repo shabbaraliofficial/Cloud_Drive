@@ -38,6 +38,18 @@ GOOGLE_REDIRECT_URI = config.GOOGLE_REDIRECT_URI or os.getenv("GOOGLE_REDIRECT_U
 FRONTEND_URL = config.FRONTEND_URL
 
 
+def _normalize_registration_identity(payload: RegisterRequest) -> tuple[str, str, str]:
+    normalized_email = str(payload.email or payload.username or "").strip().lower()
+    normalized_password = str(payload.password or "").strip()
+
+    raw_username = str(payload.username or "").strip().lower().replace(" ", "_")
+    if not raw_username or "@" in raw_username:
+        raw_username = normalized_email.split("@", 1)[0]
+
+    normalized_username = raw_username[:50] or normalized_email.split("@", 1)[0]
+    return normalized_email, normalized_username, normalized_password
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -46,7 +58,9 @@ async def register(
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> RegisterResponse:
     logger.info("Register API called")
-    existing_email_user = await db.users.find_one({"email": payload.email})
+    normalized_email, normalized_username, normalized_password = _normalize_registration_identity(payload)
+
+    existing_email_user = await db.users.find_one({"email": normalized_email})
     if existing_email_user:
         is_verified = bool(
             existing_email_user.get("is_email_verified", existing_email_user.get("is_verified", False))
@@ -64,23 +78,22 @@ async def register(
                 },
             )
             otp_service = OTPService(db)
-            otp = await otp_service.create_otp(payload.email, "register")
-            background_tasks.add_task(send_otp_email, payload.email, otp)
-            logger.info("OTP email queued for registration resend: email=%s", payload.email)
+            otp = await otp_service.create_otp(normalized_email, "register")
+            background_tasks.add_task(send_otp_email, normalized_email, otp)
+            logger.info("OTP email queued for registration resend: email=%s", normalized_email)
             response.status_code = status.HTTP_200_OK
-            return RegisterResponse(message="Registration successful", email=payload.email)
+            return RegisterResponse(message="Registration successful", email=normalized_email)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already registered")
 
-    existing_username_or_mobile = await db.users.find_one(
-        {
-            "$or": [
-                {"username": payload.username},
-                {"mobile_number": payload.mobile_number},
-            ]
-        }
-    )
-    if existing_username_or_mobile:
+    existing_mobile_user = await db.users.find_one({"mobile_number": payload.mobile_number})
+    if existing_mobile_user:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
+
+    resolved_username = normalized_username
+    suffix = 0
+    while await db.users.find_one({"username": resolved_username}):
+        suffix += 1
+        resolved_username = f"{normalized_username}{suffix}"
 
     now = datetime.utcnow()
     default_plan = build_plan_update("free")
@@ -89,10 +102,10 @@ async def register(
             "full_name": payload.full_name,
             "date_of_birth": payload.date_of_birth.isoformat(),
             "dob": payload.date_of_birth.isoformat(),
-            "email": payload.email,
+            "email": normalized_email,
             "mobile_number": payload.mobile_number,
             "phone_number": payload.mobile_number,
-            "username": payload.username,
+            "username": resolved_username,
             "profile_picture": None,
             "gender": None,
             "bio": None,
@@ -103,7 +116,7 @@ async def register(
             "is_premium": default_plan["is_premium"],
             "two_factor_enabled": False,
             "last_login": None,
-            "password_hash": hash_password(payload.password),
+            "password_hash": hash_password(normalized_password),
             "role": "user",
             "is_active": True,
             "is_verified": True,
@@ -116,10 +129,10 @@ async def register(
     )
 
     otp_service = OTPService(db)
-    otp = await otp_service.create_otp(payload.email, "register")
-    background_tasks.add_task(send_otp_email, payload.email, otp)
-    logger.info("OTP email queued for registration: email=%s", payload.email)
-    return RegisterResponse(message="Registration successful", email=payload.email)
+    otp = await otp_service.create_otp(normalized_email, "register")
+    background_tasks.add_task(send_otp_email, normalized_email, otp)
+    logger.info("OTP email queued for registration: email=%s", normalized_email)
+    return RegisterResponse(message="Registration successful", email=normalized_email)
 
 
 @router.post("/verify-otp", response_model=MessageResponse)
