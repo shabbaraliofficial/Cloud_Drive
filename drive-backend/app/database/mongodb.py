@@ -53,9 +53,10 @@ async def connect_to_mongo() -> None:
                 database = client[config.MONGODB_DB_NAME]
             else:
                 raise ValueError("MONGO_URL must include a database name or set MONGODB_DB_NAME")
+        logger.info("MongoDB database selected: %s", database.name)
         await client.admin.command("ping")
         database_error = None
-        logger.info("MongoDB connected")
+        logger.info("MongoDB connected successfully")
         await ensure_indexes()
         await ensure_admin_user()
     except Exception as exc:

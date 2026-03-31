@@ -6,7 +6,6 @@ from pathlib import Path
 import secrets
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, PartialCredentialsError
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -14,8 +13,6 @@ from fastapi.staticfiles import StaticFiles
 from pymongo.errors import PyMongoError
 from starlette.middleware.sessions import SessionMiddleware
 import uvicorn
-
-load_dotenv()
 
 from app.core import config
 from app.core.logging import setup_logging
@@ -31,13 +28,31 @@ REPO_ROOT = BACKEND_ROOT.parent
 SESSION_SECRET = config.SESSION_SECRET_KEY or secrets.token_urlsafe(32)
 
 
+def _build_cors_origins() -> list[str]:
+    origins = {"http://localhost:5173"}
+    origins.update(origin for origin in config.CORS_ORIGINS if origin)
+    if config.FRONTEND_URL:
+        origins.add(config.FRONTEND_URL)
+    return sorted(origins)
+
+
+CORS_ORIGINS = _build_cors_origins()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("Starting backend lifespan")
-    await connect_to_mongo()
-    yield
-    logger.info("Shutting down backend lifespan")
-    await close_mongo_connection()
+    try:
+        await connect_to_mongo()
+        mongo_status = await test_mongo_connection()
+        logger.info("MongoDB startup status: %s", mongo_status)
+    except Exception:
+        logger.exception("Unexpected MongoDB startup error; continuing without database connection")
+    try:
+        yield
+    finally:
+        logger.info("Shutting down backend lifespan")
+        await close_mongo_connection()
 
 
 app = FastAPI(
@@ -51,19 +66,15 @@ app.add_middleware(
     secret_key=SESSION_SECRET,
 )
 
-origins = [
-    "http://localhost:5173",
-    "https://cloud-drive-u8m3.vercel.app",
-    "https://cloud-drive-u8m3-p03tncgoo-shabbaraliofficials-projects.vercel.app",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info("CORS allow_origins: %s", CORS_ORIGINS)
 
 app.include_router(api_router)
 app.include_router(profile_router)
@@ -118,4 +129,4 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=config.PORT)
+    uvicorn.run("app.main:app", host=config.HOST, port=config.PORT)
