@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_PATH = BASE_DIR / ".env"
+REPO_ENV_PATH = BASE_DIR.parent / ".env"
 DEFAULT_ALLOWED_MIME_TYPES = (
     "image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,"
     "video/quicktime,application/pdf,text/plain,application/zip"
@@ -79,6 +83,8 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = ""
 
     model_config = SettingsConfigDict(
+        env_file=(ENV_PATH, REPO_ENV_PATH),
+        env_file_encoding="utf-8",
         env_ignore_empty=True,
         extra="ignore",
     )
