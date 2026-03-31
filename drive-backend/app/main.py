@@ -26,10 +26,15 @@ logger = logging.getLogger(__name__)
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = BACKEND_ROOT.parent
 SESSION_SECRET = config.SESSION_SECRET_KEY or secrets.token_urlsafe(32)
+DEFAULT_FRONTEND_ORIGINS = {
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://cloud-drive-u8m3.vercel.app",
+}
 
 
 def _build_cors_origins() -> list[str]:
-    origins = {"http://localhost:5173"}
+    origins = set(DEFAULT_FRONTEND_ORIGINS)
     origins.update(origin for origin in config.CORS_ORIGINS if origin)
     if config.FRONTEND_URL:
         origins.add(config.FRONTEND_URL)
@@ -69,6 +74,7 @@ app.add_middleware(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
