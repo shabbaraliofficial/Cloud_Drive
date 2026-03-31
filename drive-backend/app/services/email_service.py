@@ -11,37 +11,37 @@ logger = logging.getLogger(__name__)
 
 class EmailService:
     async def send_email(self, to_email: str, subject: str, body: str) -> None:
-        if not (config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD and config.SMTP_FROM):
+        if not (config.MAIL_SERVER and config.MAIL_USERNAME and config.MAIL_PASSWORD and config.MAIL_FROM):
             logger.warning("SMTP not configured; skipping email send to %s", to_email)
             return
 
         message = EmailMessage()
-        message["From"] = config.SMTP_FROM
+        message["From"] = config.MAIL_FROM
         message["To"] = to_email
         message["Subject"] = subject
         message.set_content(body)
 
         await aiosmtplib.send(
             message,
-            hostname=config.SMTP_HOST,
-            port=config.SMTP_PORT,
-            username=config.SMTP_USER,
-            password=config.SMTP_PASSWORD,
+            hostname=config.MAIL_SERVER,
+            port=config.MAIL_PORT,
+            username=config.MAIL_USERNAME,
+            password=config.MAIL_PASSWORD,
             start_tls=True,
         )
 
 
 async def send_otp_email(to_email: str, otp: str) -> None:
-    email_user = config.EMAIL_USER or config.SMTP_USER
-    email_password = config.EMAIL_PASSWORD or config.SMTP_PASSWORD
-    smtp_host = config.SMTP_HOST
-    smtp_port = config.SMTP_PORT
-    if not (smtp_host and email_user and email_password):
+    email_user = config.MAIL_USERNAME
+    email_password = config.MAIL_PASSWORD
+    smtp_host = config.MAIL_SERVER
+    smtp_port = config.MAIL_PORT
+    if not (smtp_host and email_user and email_password and config.MAIL_FROM):
         logger.warning("SMTP / email credentials not configured; skipping OTP email to %s", to_email)
         return
 
     message = EmailMessage()
-    message["From"] = config.SMTP_FROM or email_user
+    message["From"] = config.MAIL_FROM
     message["To"] = to_email
     message["Subject"] = "Your OTP Verification Code"
     message.set_content(f"Your OTP is: {otp}")
