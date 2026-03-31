@@ -4,7 +4,7 @@ import logging
 import os
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -41,6 +41,7 @@ FRONTEND_URL = config.FRONTEND_URL
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
+    background_tasks: BackgroundTasks,
     response: Response,
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> RegisterResponse:
@@ -51,15 +52,23 @@ async def register(
             existing_email_user.get("is_email_verified", existing_email_user.get("is_verified", False))
         )
         if not is_verified:
+            await db.users.update_one(
+                {"_id": existing_email_user["_id"]},
+                {
+                    "$set": {
+                        "is_active": True,
+                        "is_verified": True,
+                        "is_email_verified": True,
+                        "updated_at": datetime.utcnow(),
+                    }
+                },
+            )
             otp_service = OTPService(db)
             otp = await otp_service.create_otp(payload.email, "register")
-            try:
-                await send_otp_email(payload.email, otp)
-                logger.info("OTP email sent for registration resend: email=%s", payload.email)
-            except Exception as exc:
-                logger.warning("Failed to resend registration OTP: email=%s error=%s", payload.email, exc)
+            background_tasks.add_task(send_otp_email, payload.email, otp)
+            logger.info("OTP email queued for registration resend: email=%s", payload.email)
             response.status_code = status.HTTP_200_OK
-            return RegisterResponse(message="OTP resent to email", email=payload.email)
+            return RegisterResponse(message="Registration successful", email=payload.email)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already registered")
 
     existing_username_or_mobile = await db.users.find_one(
@@ -96,8 +105,9 @@ async def register(
             "last_login": None,
             "password_hash": hash_password(payload.password),
             "role": "user",
-            "is_active": False,
-            "is_verified": False,
+            "is_active": True,
+            "is_verified": True,
+            "is_email_verified": True,
             "is_2fa_enabled": False,
             "auth_notifications_enabled": True,
             "created_at": now,
@@ -107,12 +117,9 @@ async def register(
 
     otp_service = OTPService(db)
     otp = await otp_service.create_otp(payload.email, "register")
-    try:
-        await send_otp_email(payload.email, otp)
-        logger.info("OTP email sent for registration: email=%s", payload.email)
-    except Exception as exc:
-        logger.warning("Failed to send registration OTP: email=%s error=%s", payload.email, exc)
-    return RegisterResponse(message="OTP sent to your email", email=payload.email)
+    background_tasks.add_task(send_otp_email, payload.email, otp)
+    logger.info("OTP email queued for registration: email=%s", payload.email)
+    return RegisterResponse(message="Registration successful", email=payload.email)
 
 
 @router.post("/verify-otp", response_model=MessageResponse)
@@ -145,8 +152,25 @@ async def login(payload: LoginRequest, db: AsyncIOMotorDatabase = Depends(get_da
     )
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not user.get("is_active", False):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not active")
+
+    if (
+        not user.get("is_active", False)
+        or not user.get("is_verified", False)
+        or not user.get("is_email_verified", user.get("is_verified", False))
+    ):
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "is_active": True,
+                    "is_verified": True,
+                    "is_email_verified": True,
+                    "updated_at": datetime.utcnow(),
+                }
+            },
+        )
+        user = await db.users.find_one({"_id": user["_id"]})
+        assert user is not None
 
     try:
         access_token = create_access_token(str(user["_id"]), extra={"username": user["username"]})
@@ -196,11 +220,17 @@ async def refresh_token(payload: RefreshTokenRequest, db: AsyncIOMotorDatabase =
 
 
 @router.post("/forgot-password", response_model=MessageResponse)
-async def forgot_password(payload: ForgotPasswordRequest, db: AsyncIOMotorDatabase = Depends(get_database)) -> MessageResponse:
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> MessageResponse:
     user = await db.users.find_one({"email": payload.email})
     if user:
         otp_service = OTPService(db)
-        await otp_service.send_otp(payload.email, "forgot_password")
+        otp = await otp_service.create_otp(payload.email, "forgot_password")
+        background_tasks.add_task(send_otp_email, payload.email, otp)
+        logger.info("OTP email queued for forgot password: email=%s", payload.email)
     return MessageResponse(message="If the email exists, OTP has been sent.")
 
 
@@ -387,14 +417,12 @@ async def google_callback(
 @debug_router.get("/send-test-email")
 async def send_test_email(
     email: str,
+    background_tasks: BackgroundTasks,
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict[str, str]:
     otp_service = OTPService(db)
     otp = await otp_service.create_otp(email, "debug_test")
-    try:
-        await send_otp_email(email, otp)
-        logger.info("Debug OTP email sent: email=%s", email)
-    except Exception as exc:
-        logger.warning("Debug OTP email failed: email=%s error=%s", email, exc)
-    return {"message": "Test OTP email attempted", "email": email}
+    background_tasks.add_task(send_otp_email, email, otp)
+    logger.info("Debug OTP email queued: email=%s", email)
+    return {"message": "Test OTP email queued", "email": email}
 
