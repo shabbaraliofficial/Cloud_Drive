@@ -24,6 +24,20 @@ const MULTIPART_THRESHOLD = 25 * 1024 * 1024
 const MAX_RESUMABLE_FILE_SIZE = 10 * 1024 * 1024 * 1024
 const UPLOAD_SESSIONS_STORAGE_KEY = 'drive.multipart-upload-sessions'
 const MONGO_OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i
+const GENERIC_UPLOAD_MIME_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream', 'application/unknown'])
+const EXTENSION_MIME_TYPES = Object.freeze({
+  heic: 'image/heic',
+  heif: 'image/heif',
+  avif: 'image/avif',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  pdf: 'application/pdf',
+})
 let refreshRequest = null
 
 function createApiError(message, status = null, options = {}) {
@@ -185,6 +199,49 @@ function normalizeUploadFolderId(folderId) {
   }
 
   return MONGO_OBJECT_ID_PATTERN.test(value) ? value : null
+}
+
+function guessMimeTypeFromFilename(filename = '') {
+  const trimmed = String(filename || '').trim().toLowerCase()
+  const extension = trimmed.includes('.') ? trimmed.split('.').pop() : ''
+  return EXTENSION_MIME_TYPES[extension] || ''
+}
+
+function normalizeUploadContentType(contentType, filename = '') {
+  const cleaned = String(contentType || '').trim().toLowerCase()
+  if (cleaned && !GENERIC_UPLOAD_MIME_TYPES.has(cleaned)) {
+    return cleaned
+  }
+  return guessMimeTypeFromFilename(filename) || 'application/octet-stream'
+}
+
+function prepareUploadFile(file) {
+  if (!file) return file
+
+  const normalizedType = normalizeUploadContentType(file.type, file.name)
+  if (normalizedType === String(file.type || '').trim().toLowerCase()) {
+    return file
+  }
+
+  try {
+    return new File([file], file.name, {
+      type: normalizedType,
+      lastModified: file.lastModified,
+    })
+  } catch {
+    return file
+  }
+}
+
+function normalizeUploadPayloadMime(payload = {}) {
+  const filename = payload?.filename || payload?.file_name || ''
+  const normalizedContentType = normalizeUploadContentType(payload?.content_type, filename)
+  const normalizedMimeType = normalizeUploadContentType(payload?.mime_type, filename)
+  return {
+    ...payload,
+    content_type: normalizedContentType,
+    mime_type: normalizedMimeType,
+  }
 }
 
 function buildUploadFingerprint(file, folderId) {
@@ -382,8 +439,9 @@ function uploadDirectFile(file, folderId = null, onProgress) {
     const formData = new FormData()
     const xhr = new XMLHttpRequest()
     const normalizedFolderId = normalizeUploadFolderId(folderId)
+    const preparedFile = prepareUploadFile(file)
 
-    formData.append('file', file)
+    formData.append('file', preparedFile)
     if (normalizedFolderId) {
       formData.append('folder_id', normalizedFolderId)
     }
@@ -493,13 +551,13 @@ function uploadBlobToPresignedUrl(uploadUrl, blob, contentType, onProgress) {
 
 async function uploadMultipartFile(file, folderId = null, onProgress) {
   const normalizedFolderId = normalizeUploadFolderId(folderId)
+  const contentType = normalizeUploadContentType(file.type, file.name)
 
   if (file.size > MAX_RESUMABLE_FILE_SIZE) {
     throw new Error('Files larger than 10 GB are not supported yet.')
   }
 
   const totalParts = Math.max(1, Math.ceil(file.size / CHUNK_SIZE))
-  const contentType = file.type || 'application/octet-stream'
   let uploadSession = getStoredUploadSession(file, normalizedFolderId)
   let uploadStatus = null
 
@@ -808,23 +866,26 @@ export const api = {
   },
 
   getUploadUrl(payload) {
+    const normalizedPayload = normalizeUploadPayloadMime(payload)
     return request('/api/files/get-upload-url', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(normalizedPayload),
     }, true)
   },
 
   completeDirectUpload(payload) {
+    const normalizedPayload = normalizeUploadPayloadMime(payload)
     return request('/api/files/complete-upload', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(normalizedPayload),
     }, true)
   },
 
   startMultipartUpload(payload) {
+    const normalizedPayload = normalizeUploadPayloadMime(payload)
     return request('/api/files/multipart/start', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(normalizedPayload),
     }, true)
   },
 
@@ -847,9 +908,10 @@ export const api = {
   },
 
   completeMultipartUpload(payload) {
+    const normalizedPayload = normalizeUploadPayloadMime(payload)
     return request('/api/files/multipart/complete', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(normalizedPayload),
     }, true)
   },
 

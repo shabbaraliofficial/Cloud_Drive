@@ -1,18 +1,46 @@
 from __future__ import annotations
 
 from datetime import datetime
+import mimetypes
 from pathlib import Path
 from uuid import uuid4
 
 from app.services.tagging_service import generate_file_tags
+
+_CUSTOM_MIME_TYPES = {
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".avif": "image/avif",
+}
+_GENERIC_MIME_TYPES = {
+    "",
+    "application/octet-stream",
+    "binary/octet-stream",
+    "application/unknown",
+    "application/x-download",
+}
 
 
 def normalize_file_name(filename: str | None) -> str:
     return Path(filename or "unnamed").name or "unnamed"
 
 
-def normalize_mime_type(mime_type: str | None) -> str:
-    return (mime_type or "application/octet-stream").strip() or "application/octet-stream"
+def guess_mime_type(filename: str | None) -> str | None:
+    safe_filename = normalize_file_name(filename)
+    extension = Path(safe_filename).suffix.lower()
+    if extension in _CUSTOM_MIME_TYPES:
+        return _CUSTOM_MIME_TYPES[extension]
+
+    guessed_type, _ = mimetypes.guess_type(safe_filename)
+    return str(guessed_type or "").strip().lower() or None
+
+
+def normalize_mime_type(mime_type: str | None, filename: str | None = None) -> str:
+    cleaned = str(mime_type or "").strip().lower()
+    if cleaned and cleaned not in _GENERIC_MIME_TYPES:
+        return cleaned
+    guessed = guess_mime_type(filename)
+    return guessed or "application/octet-stream"
 
 
 def build_file_document(
@@ -28,7 +56,7 @@ def build_file_document(
 ) -> dict:
     now = datetime.utcnow()
     safe_filename = normalize_file_name(filename)
-    safe_mime_type = normalize_mime_type(mime_type)
+    safe_mime_type = normalize_mime_type(mime_type, safe_filename)
     safe_size = max(int(file_size or 0), 0)
     file_doc = {
         "file_name": safe_filename,
@@ -62,7 +90,7 @@ def build_file_document(
 
 def build_file_version_entry(file_doc: dict) -> dict:
     safe_filename = normalize_file_name(file_doc.get("file_name") or file_doc.get("filename"))
-    safe_mime_type = normalize_mime_type(file_doc.get("mime_type") or file_doc.get("file_type"))
+    safe_mime_type = normalize_mime_type(file_doc.get("mime_type") or file_doc.get("file_type"), safe_filename)
     safe_size = max(int(file_doc.get("file_size") or file_doc.get("size") or 0), 0)
     storage_path = file_doc.get("storage_path") or file_doc.get("file_url") or ""
     return {
@@ -92,8 +120,14 @@ def normalize_file_versions(versions: list[dict] | None) -> list[dict]:
                 "filename": normalize_file_name(version.get("filename") or version.get("file_name")),
                 "file_size": max(int(version.get("file_size") or version.get("size") or 0), 0),
                 "size": max(int(version.get("size") or version.get("file_size") or 0), 0),
-                "file_type": normalize_mime_type(version.get("file_type") or version.get("mime_type")),
-                "mime_type": normalize_mime_type(version.get("mime_type") or version.get("file_type")),
+                "file_type": normalize_mime_type(
+                    version.get("file_type") or version.get("mime_type"),
+                    version.get("file_name") or version.get("filename"),
+                ),
+                "mime_type": normalize_mime_type(
+                    version.get("mime_type") or version.get("file_type"),
+                    version.get("filename") or version.get("file_name"),
+                ),
                 "storage_path": version.get("storage_path") or version.get("file_url") or "",
                 "file_url": version.get("file_url") or version.get("storage_path") or "",
                 "thumbnail_url": version.get("thumbnail_url"),

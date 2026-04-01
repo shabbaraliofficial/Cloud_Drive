@@ -22,7 +22,7 @@ from app.schemas.admin_schema import (
     AdminUserResponse,
 )
 from app.schemas.common_schema import MessageResponse
-from app.services.file_document_service import build_storage_usage_pipeline, iter_file_asset_keys
+from app.services.file_document_service import build_storage_usage_pipeline, iter_file_asset_keys, normalize_mime_type
 from app.services.s3_service import S3Service
 from app.utils.mongo_helpers import parse_object_id
 from app.utils.plans import build_plan_update
@@ -86,15 +86,17 @@ def _serialize_admin_file(file_doc: dict, owner: dict | None = None, request: Re
         or (owner or {}).get("email")
         or "Unknown user"
     )
+    file_name = file_doc.get("file_name") or file_doc.get("filename") or "Untitled file"
+    mime_type = normalize_mime_type(file_doc.get("mime_type") or file_doc.get("file_type"), file_name)
     return AdminFileResponse(
         id=str(file_doc["_id"]),
-        file_name=file_doc.get("file_name") or file_doc.get("filename") or "Untitled file",
+        file_name=file_name,
         owner_id=str(file_doc.get("owner_id") or ""),
         owner_name=owner_name,
         owner_email=(owner or {}).get("email"),
         file_size=max(int(file_doc.get("file_size") or file_doc.get("size") or 0), 0),
-        file_type=file_doc.get("file_type") or file_doc.get("mime_type") or "application/octet-stream",
-        mime_type=file_doc.get("mime_type") or file_doc.get("file_type"),
+        file_type=mime_type,
+        mime_type=mime_type,
         file_url=_resolve_admin_file_url(request, file_doc),
         folder_id=str(file_doc["folder_id"]) if file_doc.get("folder_id") else None,
         is_deleted=bool(file_doc.get("is_deleted", False)),
@@ -400,8 +402,12 @@ async def preview_admin_file(
 
     s3_response = await s3_service.get_object(key_or_url)
     body = s3_response["Body"]
+    content_type = normalize_mime_type(
+        s3_response.get("ContentType") or file_doc.get("mime_type") or file_doc.get("file_type"),
+        file_doc.get("file_name") or file_doc.get("filename"),
+    )
     headers = {
-        "Content-Type": s3_response.get("ContentType", "application/octet-stream"),
+        "Content-Type": content_type,
     }
     if "ContentLength" in s3_response:
         headers["Content-Length"] = str(s3_response["ContentLength"])

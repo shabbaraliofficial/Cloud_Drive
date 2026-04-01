@@ -10,7 +10,7 @@ export function detectFileKind(mime = '', filename = '') {
   const lowerMime = mime.toLowerCase()
   const lowerName = filename.toLowerCase()
 
-  if (lowerMime.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(lowerName)) return 'image'
+  if (lowerMime.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp|svg|heic|heif|avif)$/.test(lowerName)) return 'image'
   if (lowerMime.includes('pdf') || lowerName.endsWith('.pdf')) return 'pdf'
   if (lowerMime.startsWith('video/') || /\.(mp4|webm|ogg|mov|mkv|avi)$/.test(lowerName)) return 'video'
   if (lowerMime.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|aac|flac)$/.test(lowerName)) return 'audio'

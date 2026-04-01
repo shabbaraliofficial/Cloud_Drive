@@ -1,15 +1,18 @@
 from __future__ import annotations
+from app.services.file_document_service import normalize_mime_type
 from app.schemas.file_schema import FileResponse, FileVersionResponse, FolderResponse
 from app.utils.access_control import normalize_permission
 
 
 def serialize_file(doc: dict) -> FileResponse:
+    filename = doc.get("file_name") or doc.get("filename") or "Untitled file"
+    mime_type = normalize_mime_type(doc.get("mime_type") or doc.get("file_type"), filename)
     return FileResponse(
         id=str(doc["_id"]),
-        file_name=doc.get("file_name") or doc.get("filename") or "Untitled file",
+        file_name=filename,
         file_size=doc.get("file_size") or doc.get("size") or 0,
-        file_type=doc.get("file_type") or doc.get("mime_type") or "application/octet-stream",
-        mime_type=doc.get("mime_type") or doc.get("file_type"),
+        file_type=mime_type,
+        mime_type=mime_type,
         owner_id=str(doc["owner_id"]),
         folder_id=str(doc["folder_id"]) if doc.get("folder_id") else None,
         storage_path=doc.get("storage_path") or doc.get("file_url") or "",
@@ -30,12 +33,14 @@ def serialize_file(doc: dict) -> FileResponse:
 
 
 def serialize_file_version(doc: dict) -> FileVersionResponse:
+    filename = doc.get("file_name") or doc.get("filename") or "Untitled file"
+    mime_type = normalize_mime_type(doc.get("mime_type") or doc.get("file_type"), filename)
     return FileVersionResponse(
         id=str(doc.get("id") or ""),
-        file_name=doc.get("file_name") or doc.get("filename") or "Untitled file",
+        file_name=filename,
         file_size=doc.get("file_size") or doc.get("size") or 0,
-        file_type=doc.get("file_type") or doc.get("mime_type") or "application/octet-stream",
-        mime_type=doc.get("mime_type") or doc.get("file_type"),
+        file_type=mime_type,
+        mime_type=mime_type,
         storage_path=doc.get("storage_path") or doc.get("file_url") or "",
         file_url=doc.get("file_url") or doc.get("storage_path"),
         thumbnail_url=doc.get("thumbnail_url"),

@@ -31,6 +31,7 @@ from app.services.file_document_service import (
     build_file_version_entry,
     build_storage_usage_pipeline,
     iter_file_asset_keys,
+    normalize_mime_type,
     normalize_file_name,
     normalize_file_versions,
 )
@@ -225,6 +226,8 @@ async def _create_or_version_file(
     thumbnail_url: str | None = None,
     s3_key: str | None = None,
 ) -> dict:
+    safe_filename = normalize_file_name(filename)
+    safe_mime_type = normalize_mime_type(mime_type, safe_filename)
     existing = await _find_existing_live_file(
         db,
         owner_id=owner_id,
@@ -234,8 +237,8 @@ async def _create_or_version_file(
     if not existing:
         result = await db.files.insert_one(
             build_file_document(
-                filename=filename,
-                mime_type=mime_type,
+                filename=safe_filename,
+                mime_type=safe_mime_type,
                 file_size=file_size,
                 owner_id=owner_id,
                 folder_id=folder_id,
@@ -250,7 +253,6 @@ async def _create_or_version_file(
 
     previous_versions = normalize_file_versions(existing.get("versions"))
     next_versions = [build_file_version_entry(existing), *previous_versions]
-    safe_filename = normalize_file_name(filename)
     now = datetime.utcnow()
     await db.files.update_one(
         {"_id": existing["_id"]},
@@ -260,13 +262,13 @@ async def _create_or_version_file(
                 "filename": safe_filename,
                 "file_size": max(int(file_size or 0), 0),
                 "size": max(int(file_size or 0), 0),
-                "file_type": mime_type or "application/octet-stream",
-                "mime_type": mime_type or "application/octet-stream",
+                "file_type": safe_mime_type,
+                "mime_type": safe_mime_type,
                 "storage_path": file_url,
                 "file_url": file_url,
                 "thumbnail_url": thumbnail_url,
                 "s3_key": s3_key,
-                "tags": generate_file_tags(safe_filename, mime_type or "application/octet-stream"),
+                "tags": generate_file_tags(safe_filename, safe_mime_type),
                 "versions": next_versions,
                 "updated_at": now,
             }
@@ -344,6 +346,18 @@ def _normalize_optional_folder_id(value, detail: str = "Invalid folder id"):
     return value
 
 
+def _effective_file_mime_type(file_doc: dict | None, fallback_mime_type: str | None = None, fallback_filename: str | None = None) -> str:
+    filename = (
+        fallback_filename
+        or (file_doc or {}).get("file_name")
+        or (file_doc or {}).get("filename")
+    )
+    mime_type = fallback_mime_type
+    if mime_type is None and file_doc:
+        mime_type = file_doc.get("mime_type") or file_doc.get("file_type")
+    return normalize_mime_type(mime_type, filename)
+
+
 @router.post("/upload", response_model=FileResponse)
 async def upload_file(
     file: UploadFile = File(...),
@@ -399,9 +413,14 @@ async def upload_file(
                 )
 
         safe_name = normalize_file_name(filename)
+        effective_mime_type = _effective_file_mime_type(
+            None,
+            fallback_mime_type=file.content_type,
+            fallback_filename=safe_name,
+        )
         file_url = await s3_service.upload_bytes(
             content=content,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=effective_mime_type,
             filename=safe_name,
             owner_id=str(current_user["_id"]),
             folder_id=str(parsed_folder_id) if parsed_folder_id else None,
@@ -411,7 +430,7 @@ async def upload_file(
         try:
             thumbnail_url = await s3_service.create_thumbnail(
                 content=content,
-                mime_type=file.content_type or "application/octet-stream",
+                mime_type=effective_mime_type,
                 owner_id=str(current_user["_id"]),
                 folder_id=str(parsed_folder_id) if parsed_folder_id else None,
             )
@@ -426,7 +445,7 @@ async def upload_file(
         doc = await _create_or_version_file(
             db,
             filename=filename,
-            mime_type=file.content_type or "application/octet-stream",
+            mime_type=effective_mime_type,
             file_size=file_size,
             owner_id=current_user["_id"],
             folder_id=parsed_folder_id,
@@ -529,10 +548,15 @@ async def upload_folder(
     response_items: list[FileResponse] = []
     for upload, content, file_size in validated_uploads:
         safe_name = normalize_file_name(upload.filename)
+        effective_mime_type = _effective_file_mime_type(
+            None,
+            fallback_mime_type=upload.content_type,
+            fallback_filename=safe_name,
+        )
         try:
             file_url = await s3_service.upload_bytes(
                 content=content,
-                content_type=upload.content_type or "application/octet-stream",
+                content_type=effective_mime_type,
                 filename=safe_name,
                 owner_id=str(current_user["_id"]),
                 folder_id=str(folder_id),
@@ -542,7 +566,7 @@ async def upload_folder(
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"File upload failed: {exc}") from exc
         thumbnail_url = await s3_service.create_thumbnail(
             content=content,
-            mime_type=upload.content_type or "application/octet-stream",
+            mime_type=effective_mime_type,
             owner_id=str(current_user["_id"]),
             folder_id=str(folder_id),
         )
@@ -550,7 +574,7 @@ async def upload_folder(
             inserted = await _create_or_version_file(
                 db,
                 filename=upload.filename or "unnamed",
-                mime_type=upload.content_type or "application/octet-stream",
+                mime_type=effective_mime_type,
                 file_size=file_size,
                 owner_id=current_user["_id"],
                 folder_id=folder_id,
@@ -594,7 +618,7 @@ async def rename_file(
             "$set": {
                 "file_name": safe_name,
                 "filename": safe_name,
-                "tags": generate_file_tags(safe_name, existing.get("mime_type") or existing.get("file_type")),
+                "tags": generate_file_tags(safe_name, _effective_file_mime_type(existing, fallback_filename=safe_name)),
                 "updated_at": datetime.utcnow(),
             }
         },
@@ -618,10 +642,15 @@ async def get_upload_url(
         await ensure_folder_write_access(db, folder, current_user)
 
     owner_id = str(current_user["_id"])
+    effective_mime_type = _effective_file_mime_type(
+        None,
+        fallback_mime_type=payload.content_type,
+        fallback_filename=payload.filename,
+    )
     data = await s3_service.get_presigned_put_url(
         owner_id=owner_id,
         filename=payload.filename,
-        content_type=payload.content_type or "application/octet-stream",
+        content_type=effective_mime_type,
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
     return data
@@ -644,9 +673,14 @@ async def complete_direct_upload(
         if config.AWS_S3_BUCKET
         else payload.key
     )
+    effective_mime_type = _effective_file_mime_type(
+        None,
+        fallback_mime_type=payload.mime_type,
+        fallback_filename=payload.filename,
+    )
     thumbnail_url = await s3_service.create_thumbnail_from_storage(
         storage_path=file_url,
-        mime_type=payload.mime_type or "application/octet-stream",
+        mime_type=effective_mime_type,
         owner_id=str(current_user["_id"]),
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
@@ -654,7 +688,7 @@ async def complete_direct_upload(
         doc = await _create_or_version_file(
             db,
             filename=payload.filename or "unnamed",
-            mime_type=payload.mime_type or "application/octet-stream",
+            mime_type=effective_mime_type,
             file_size=max(int(payload.file_size or 0), 0),
             owner_id=current_user["_id"],
             folder_id=parsed_folder_id,
@@ -687,10 +721,15 @@ async def start_multipart_upload(
         await ensure_folder_write_access(db, folder, current_user)
 
     owner_id = str(current_user["_id"])
+    effective_mime_type = _effective_file_mime_type(
+        None,
+        fallback_mime_type=payload.content_type,
+        fallback_filename=payload.filename,
+    )
     data = await s3_service.start_multipart_upload(
         owner_id=owner_id,
         filename=payload.filename,
-        content_type=payload.content_type or "application/octet-stream",
+        content_type=effective_mime_type,
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
 
@@ -702,7 +741,7 @@ async def start_multipart_upload(
                     "file_name": payload.filename,
                     "key": data["key"],
                     "file_url": data["file_url"],
-                    "mime_type": payload.content_type or "application/octet-stream",
+                    "mime_type": effective_mime_type,
                     "folder_id": parsed_folder_id,
                     "file_size": max(int(payload.file_size or 0), 0),
                     "total_parts": max(int(payload.total_parts or 0), 0),
@@ -828,17 +867,23 @@ async def complete_multipart_upload(
         upload_id=payload.upload_id,
         parts=parts,
     )
+    filename = payload.filename or doc.get("file_name") or "unnamed"
+    effective_mime_type = _effective_file_mime_type(
+        None,
+        fallback_mime_type=payload.mime_type or doc.get("mime_type"),
+        fallback_filename=filename,
+    )
     thumbnail_url = await s3_service.create_thumbnail_from_storage(
         storage_path=file_url,
-        mime_type=payload.mime_type or doc.get("mime_type") or "application/octet-stream",
+        mime_type=effective_mime_type,
         owner_id=str(current_user["_id"]),
         folder_id=str(parsed_folder_id) if parsed_folder_id else None,
     )
     try:
         file_doc = await _create_or_version_file(
             db,
-            filename=payload.filename or doc.get("file_name") or "unnamed",
-            mime_type=payload.mime_type or doc.get("mime_type") or "application/octet-stream",
+            filename=filename,
+            mime_type=effective_mime_type,
             file_size=final_size,
             owner_id=current_user["_id"],
             folder_id=parsed_folder_id,
@@ -926,12 +971,13 @@ async def get_shared_file(
     file_doc = await db.files.find_one({"_id": share_doc["file_id"], "is_deleted": {"$ne": True}})
     if not file_doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    mime_type = _effective_file_mime_type(file_doc)
 
     return {
         "id": str(file_doc["_id"]),
         "name": file_doc.get("filename") or file_doc.get("file_name") or "File",
         "file_url": file_doc.get("file_url") or file_doc.get("storage_path"),
-        "mime_type": file_doc.get("mime_type") or file_doc.get("file_type") or "application/octet-stream",
+        "mime_type": mime_type,
         "size": file_doc.get("size") or file_doc.get("file_size") or 0,
         "permission": share_doc.get("permission", "viewer"),
         "is_public": share_doc.get("is_public", True),
@@ -1024,7 +1070,11 @@ async def restore_file_version(
     selected_version = versions.pop(restore_index)
     current_version = build_file_version_entry(doc)
     safe_name = normalize_file_name(selected_version.get("file_name") or selected_version.get("filename"))
-    mime_type = selected_version.get("mime_type") or selected_version.get("file_type") or "application/octet-stream"
+    mime_type = _effective_file_mime_type(
+        None,
+        fallback_mime_type=selected_version.get("mime_type") or selected_version.get("file_type"),
+        fallback_filename=safe_name,
+    )
 
     await db.files.update_one(
         {"_id": parsed_id},
@@ -1137,13 +1187,14 @@ async def get_file_metadata(
     await ensure_file_access(db, doc, current_user)
 
     file_url = _resolve_file_url(request, doc.get("file_url") or doc.get("storage_path"))
+    mime_type = _effective_file_mime_type(doc)
     return {
         "id": str(doc["_id"]),
         "name": doc.get("filename") or doc.get("file_name") or "File",
         "size": doc.get("size") or doc.get("file_size") or 0,
-        "type": doc.get("mime_type") or doc.get("file_type") or "application/octet-stream",
+        "type": mime_type,
         "url": file_url,
-        "mime_type": doc.get("mime_type") or doc.get("file_type") or "application/octet-stream",
+        "mime_type": mime_type,
         "preview_url": file_url,
         "stream_url": f"{str(request.base_url).rstrip('/')}/api/files/{file_id}/stream",
         "thumbnail_url": doc.get("thumbnail_url"),
@@ -1169,9 +1220,10 @@ async def stream_file(
     range_header = request.headers.get("range")
     s3_response = await s3_service.get_object(key_or_url, range_header=range_header)
     body = s3_response["Body"]
+    content_type = _effective_file_mime_type(doc, fallback_mime_type=s3_response.get("ContentType"))
     headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": s3_response.get("ContentType", "application/octet-stream"),
+        "Content-Type": content_type,
     }
     if "ContentRange" in s3_response:
         headers["Content-Range"] = s3_response["ContentRange"]
@@ -1274,13 +1326,14 @@ async def preview_file(
     await ensure_file_access(db, doc, current_user)
 
     file_url = _resolve_file_url(request, doc.get("file_url") or doc.get("storage_path"))
+    mime_type = _effective_file_mime_type(doc)
 
     return {
         "file_url": file_url,
         "preview_url": file_url,
         "stream_url": f"{str(request.base_url).rstrip('/')}/api/files/{file_id}/stream",
         "thumbnail_url": doc.get("thumbnail_url"),
-        "mime_type": doc.get("mime_type") or doc.get("file_type") or "application/octet-stream",
+        "mime_type": mime_type,
         "name": doc.get("filename") or doc.get("file_name") or "File",
         "size": doc.get("size") or doc.get("file_size"),
         "tags": doc.get("tags", []),
