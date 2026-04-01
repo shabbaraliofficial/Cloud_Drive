@@ -947,7 +947,7 @@ function AdminPage() {
         open={Boolean(previewFile)}
         file={previewFile}
         onClose={() => setPreviewFile(null)}
-        previewBasePath="/admin/file"
+        previewBasePath="/api/admin/file"
       />
     </AdminLayout>
   )

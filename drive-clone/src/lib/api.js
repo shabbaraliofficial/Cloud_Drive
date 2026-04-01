@@ -2,10 +2,22 @@ import { clearAuthTokens, getAccessToken, getRefreshToken, setAuthTokens } from 
 import { toast } from './popup'
 import { normalizeStoragePayload } from './storage'
 
-const configuredBaseUrl = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '')
-export const BASE_URL = configuredBaseUrl || (import.meta.env.DEV
-  ? 'http://127.0.0.1:8000'
-  : 'https://cloud-drive-l02z.onrender.com')
+function getRuntimeBaseUrl() {
+  const configuredBaseUrl = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '')
+  if (configuredBaseUrl) return configuredBaseUrl
+
+  if (typeof window !== 'undefined') {
+    const { hostname, origin } = window.location
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://127.0.0.1:8000'
+    }
+    return origin.replace(/\/+$/, '')
+  }
+
+  return import.meta.env.DEV ? 'http://127.0.0.1:8000' : ''
+}
+
+export const BASE_URL = getRuntimeBaseUrl()
 export const CHUNK_SIZE = 5 * 1024 * 1024
 
 const MULTIPART_THRESHOLD = 25 * 1024 * 1024
