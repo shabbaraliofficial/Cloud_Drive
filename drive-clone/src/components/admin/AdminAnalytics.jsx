@@ -48,7 +48,7 @@ function AnalyticsTooltip({ active, payload, label, valueFormatter = (value) => 
 
 function ChartPanel({ title, subtitle, Icon, children, footer }) {
   return (
-    <article className="rounded-[28px] border border-slate-200/80 bg-white/92 p-5 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/70">
+    <article className="min-w-0 rounded-[28px] border border-slate-200/80 bg-white/92 p-5 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/70">
       <div className="flex items-start gap-3">
         <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-sky-700 dark:bg-slate-800 dark:text-sky-300">
           <Icon size={20} />
@@ -58,7 +58,7 @@ function ChartPanel({ title, subtitle, Icon, children, footer }) {
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
       </div>
-      <div className="mt-5 h-72">{children}</div>
+      <div className="mt-5 h-72 min-h-[18rem] min-w-0">{children}</div>
       {footer ? <div className="mt-4">{footer}</div> : null}
     </article>
   )
@@ -94,7 +94,7 @@ function LoadingPanel() {
       {Array.from({ length: 4 }).map((_, index) => (
         <div
           key={index}
-          className="h-[420px] animate-pulse rounded-[28px] border border-slate-200/80 bg-white/75 dark:border-slate-800/80 dark:bg-slate-950/50"
+          className="h-[420px] min-w-0 animate-pulse rounded-[28px] border border-slate-200/80 bg-white/75 dark:border-slate-800/80 dark:bg-slate-950/50"
         />
       ))}
     </div>
@@ -153,7 +153,7 @@ function AdminAnalytics({ analytics, loading = false }) {
           )}
         >
           {totalStorage > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={288}>
               <PieChart>
                 <Pie
                   data={storageData}
@@ -190,7 +190,7 @@ function AdminAnalytics({ analytics, loading = false }) {
           )}
         >
           {totalFiles > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={288}>
               <PieChart>
                 <Pie
                   data={fileTypeData}
@@ -219,7 +219,7 @@ function AdminAnalytics({ analytics, loading = false }) {
           Icon={UploadCloud}
           footer={<InlineMetric label="7-day total" value={uploadData.reduce((sum, item) => sum + Number(item.count || 0), 0).toLocaleString()} tone="sky" />}
         >
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={288}>
             <LineChart data={uploadData} margin={{ top: 8, right: 12, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.18)" />
               <XAxis
@@ -250,7 +250,7 @@ function AdminAnalytics({ analytics, loading = false }) {
           Icon={TrendingUp}
           footer={<InlineMetric label="6-month total" value={growthData.reduce((sum, item) => sum + Number(item.users || 0), 0).toLocaleString()} tone="emerald" />}
         >
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={288}>
             <BarChart data={growthData} margin={{ top: 8, right: 12, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.18)" />
               <XAxis dataKey="month" tickLine={false} axisLine={false} stroke="#94a3b8" />
