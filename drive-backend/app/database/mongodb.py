@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
 import os
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -16,9 +19,97 @@ from app.utils.plans import build_plan_update
 
 logger = logging.getLogger(__name__)
 
+_MONGO_DOH_PROVIDERS = (
+    "https://dns.google/resolve",
+    "https://cloudflare-dns.com/dns-query",
+)
+
 client: AsyncIOMotorClient | None = None
 database: AsyncIOMotorDatabase | None = None
 database_error: str | None = "MongoDB is not connected"
+
+
+def _fetch_doh_record(name: str, record_type: str) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for endpoint in _MONGO_DOH_PROVIDERS:
+        url = f"{endpoint}?name={name}&type={record_type}"
+        request = Request(url, headers={"Accept": "application/dns-json", "User-Agent": "cloud-drive-backend"})
+        try:
+            with urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            status_code = int(payload.get("Status", -1))
+            if status_code != 0:
+                raise ValueError(f"DNS-over-HTTPS lookup failed for {name} {record_type} with status {status_code}")
+            return payload
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(f"DNS-over-HTTPS lookup failed for {name} {record_type}: {last_error}") from last_error
+
+
+def _parse_srv_hosts(payload: dict[str, Any]) -> list[str]:
+    hosts: list[str] = []
+    for answer in payload.get("Answer", []):
+        data = str(answer.get("data") or "").strip()
+        if not data:
+            continue
+        parts = data.split()
+        if len(parts) != 4:
+            continue
+        _, _, port, host = parts
+        hosts.append(f"{host.rstrip('.')}:{port}")
+    if not hosts:
+        raise ValueError("No SRV hosts were returned for the MongoDB Atlas cluster")
+    return hosts
+
+
+def _parse_txt_options(payload: dict[str, Any]) -> dict[str, str]:
+    options: dict[str, str] = {}
+    for answer in payload.get("Answer", []):
+        data = str(answer.get("data") or "").strip().strip('"')
+        if not data:
+            continue
+        for key, value in parse_qsl(data, keep_blank_values=True):
+            options[key] = value
+    return options
+
+
+def _build_mongo_doh_fallback_uri(mongo_url: str) -> str:
+    parsed = urlsplit(mongo_url)
+    if parsed.scheme != "mongodb+srv":
+        return mongo_url
+
+    if "@" in parsed.netloc:
+        userinfo, hostname = parsed.netloc.rsplit("@", 1)
+        auth_prefix = f"{userinfo}@"
+    else:
+        hostname = parsed.netloc
+        auth_prefix = ""
+
+    hostname = hostname.strip()
+    if not hostname:
+        raise ValueError("MongoDB SRV URI is missing a hostname")
+
+    srv_payload = _fetch_doh_record(f"_mongodb._tcp.{hostname}", "SRV")
+    txt_payload = _fetch_doh_record(hostname, "TXT")
+    hosts = _parse_srv_hosts(srv_payload)
+
+    merged_options = _parse_txt_options(txt_payload)
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        merged_options[key] = value
+
+    if "tls" not in merged_options and "ssl" not in merged_options:
+        merged_options["tls"] = "true"
+
+    path = parsed.path or "/"
+    query = urlencode(merged_options, doseq=True)
+    fallback_uri = urlunsplit(("mongodb", f"{auth_prefix}{','.join(hosts)}", path, query, ""))
+    logger.info(
+        "Resolved MongoDB Atlas SRV URI via DNS-over-HTTPS: hostname=%s hosts=%s",
+        hostname,
+        hosts,
+    )
+    return fallback_uri
 
 
 async def connect_to_mongo() -> None:
@@ -42,7 +133,13 @@ async def connect_to_mongo() -> None:
         return
 
     try:
-        client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=10000)
+        resolved_mongo_url = mongo_url
+        if mongo_url.startswith("mongodb+srv://"):
+            try:
+                resolved_mongo_url = _build_mongo_doh_fallback_uri(mongo_url)
+            except Exception as exc:
+                logger.warning("MongoDB SRV DNS-over-HTTPS fallback unavailable; using original SRV URI: %s", exc)
+        client = AsyncIOMotorClient(resolved_mongo_url, serverSelectionTimeoutMS=10000)
         try:
             database = client.get_default_database()
         except ConfigurationError:

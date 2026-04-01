@@ -17,6 +17,21 @@ def get_default_storage_limit() -> int:
     return int(config.DEFAULT_STORAGE_QUOTA_BYTES)
 
 
+def _format_storage_bytes(value: int) -> str:
+    safe_value = max(int(value or 0), 0)
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(safe_value)
+    unit_index = 0
+
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    return f"{size:.1f} {units[unit_index]}"
+
+
 def normalize_storage_limit(value) -> int:
     default_limit = get_default_storage_limit()
 
@@ -137,7 +152,11 @@ async def ensure_storage_capacity(
     if extra and payload["used"] + extra > payload["total"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Storage limit reached. Upgrade your plan to upload more files.",
+            detail=(
+                "Storage limit reached. "
+                f"Used {_format_storage_bytes(payload['used'])} of {_format_storage_bytes(payload['total'])}. "
+                "Delete files or upgrade your plan to upload more."
+            ),
         )
 
     return payload

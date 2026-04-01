@@ -46,6 +46,8 @@ class S3Service:
         self.bucket = config.AWS_S3_BUCKET
         self.region = config.AWS_REGION
         self.endpoint_url = config.AWS_S3_ENDPOINT_URL or None
+        self.public_read = bool(config.AWS_S3_PUBLIC_READ)
+        self.local_fallback_enabled = config.APP_ENV.lower() != "production"
         self.local_upload_root = Path(__file__).resolve().parents[2] / "uploads"
         self.local_upload_root.mkdir(parents=True, exist_ok=True)
 
@@ -138,14 +140,17 @@ class S3Service:
 
     def _upload_thumbnail_bytes(self, thumbnail_bytes: bytes, thumb_key: str) -> str:
         buffer = BytesIO(thumbnail_bytes)
-        buffer.seek(0)
-        assert self.client is not None
-        self.client.upload_fileobj(
-            buffer,
-            self.bucket,
-            thumb_key,
-            ExtraArgs=self._object_upload_args("image/jpeg"),
-        )
+        def _upload(include_acl: bool) -> None:
+            buffer.seek(0)
+            assert self.client is not None
+            self.client.upload_fileobj(
+                buffer,
+                self.bucket,
+                thumb_key,
+                ExtraArgs=self._object_upload_args("image/jpeg", include_acl=include_acl),
+            )
+
+        self._run_with_optional_acl_retry("PutObject", _upload)
         return self._public_url(thumb_key)
 
     def _render_image_thumbnail_bytes(self, content: bytes) -> bytes:
@@ -183,13 +188,17 @@ class S3Service:
                 return None
 
             with tmp_out.open("rb") as fh:
-                assert self.client is not None
-                self.client.upload_fileobj(
-                    fh,
-                    self.bucket,
-                    thumb_key,
-                    ExtraArgs=self._object_upload_args("image/jpeg"),
-                )
+                def _upload(include_acl: bool) -> None:
+                    fh.seek(0)
+                    assert self.client is not None
+                    self.client.upload_fileobj(
+                        fh,
+                        self.bucket,
+                        thumb_key,
+                        ExtraArgs=self._object_upload_args("image/jpeg", include_acl=include_acl),
+                    )
+
+                self._run_with_optional_acl_retry("PutObject", _upload)
             return self._public_url(thumb_key)
         except Exception:
             return None
@@ -197,29 +206,63 @@ class S3Service:
             if tmp_out.exists():
                 tmp_out.unlink(missing_ok=True)
 
-    def _object_upload_args(self, content_type: str) -> dict[str, str]:
-        return {
+    def _object_upload_args(self, content_type: str, include_acl: bool | None = None) -> dict[str, str]:
+        upload_args = {
             "ContentType": content_type,
-            "ACL": "public-read",
         }
+        if include_acl is None:
+            include_acl = self.public_read
+        if include_acl:
+            upload_args["ACL"] = "public-read"
+        return upload_args
 
-    def _multipart_upload_args(self, content_type: str) -> dict[str, str]:
-        return {
+    def _multipart_upload_args(self, content_type: str, include_acl: bool | None = None) -> dict[str, str]:
+        upload_args = {
             "ContentType": content_type,
-            "ACL": "public-read",
         }
+        if include_acl is None:
+            include_acl = self.public_read
+        if include_acl:
+            upload_args["ACL"] = "public-read"
+        return upload_args
+
+    def _is_acl_related_error(self, exc: Exception) -> bool:
+        if not isinstance(exc, ClientError):
+            return False
+
+        error = exc.response.get("Error", {})
+        code = str(error.get("Code", "")).strip()
+        message = str(error.get("Message", "")).lower()
+        if code in {"AccessDenied", "AccessControlListNotSupported"}:
+            return True
+        if code == "InvalidRequest" and any(marker in message for marker in ("acl", "bucketownerenforced", "object ownership")):
+            return True
+        return False
+
+    def _run_with_optional_acl_retry(self, operation: str, action):
+        try:
+            return action(self.public_read)
+        except Exception as exc:
+            if self.public_read and self._is_acl_related_error(exc):
+                logger.warning(
+                    "Retrying %s without ACL because the bucket rejected public-read ACLs: %s",
+                    operation,
+                    self._format_s3_error(exc, operation),
+                )
+                return action(False)
+            raise
 
     def _format_s3_error(self, exc: Exception, operation: str = "S3 operation") -> str:
         if isinstance(exc, ClientError):
             error = exc.response.get("Error", {})
             code = error.get("Code", "Unknown")
             message = error.get("Message", str(exc))
+            if self._is_acl_related_error(exc) and operation in {"PutObject", "CreateMultipartUpload"}:
+                return (
+                    "S3 rejected the upload ACL. This bucket likely has ACLs disabled. "
+                    "Set AWS_S3_PUBLIC_READ=false or rely on bucket policy access instead of object ACLs."
+                )
             if code == "AccessDenied":
-                if operation == "PutObject":
-                    return (
-                        "S3 AccessDenied during PutObject. Your bucket or IAM policy likely rejects ACL=public-read. "
-                        "Allow s3:PutObjectAcl and public-read object uploads for this bucket."
-                    )
                 return f"S3 AccessDenied during {operation}. Check IAM permission for s3:{operation} on this bucket/key."
             return f"S3 {code}: {message}"
         return str(exc)
@@ -235,6 +278,9 @@ class S3Service:
 
     def _is_local_upload(self, storage_path: str) -> bool:
         return storage_path.startswith("/uploads/")
+
+    def is_local_upload(self, storage_path: str | None) -> bool:
+        return bool(storage_path) and self._is_local_upload(str(storage_path))
 
     def _local_upload_path(self, relative_path: str) -> Path:
         normalized = relative_path.replace("\\", "/").lstrip("/")
@@ -293,23 +339,35 @@ class S3Service:
         )
 
         def _upload() -> None:
-            assert self.client is not None
-            self.client.upload_fileobj(
-                Fileobj=BytesIO(content),
-                Bucket=self.bucket,
-                Key=key,
-                ExtraArgs=self._object_upload_args(content_type),
-            )
+            def _upload_with_acl(include_acl: bool) -> None:
+                assert self.client is not None
+                self.client.upload_fileobj(
+                    Fileobj=BytesIO(content),
+                    Bucket=self.bucket,
+                    Key=key,
+                    ExtraArgs=self._object_upload_args(content_type, include_acl=include_acl),
+                )
+
+            self._run_with_optional_acl_retry("PutObject", _upload_with_acl)
 
         try:
             await to_thread.run_sync(_upload)
             logger.info("Uploaded object to S3: bucket=%s key=%s", self.bucket, key)
             return self._public_url(key)
         except Exception as exc:
-            logger.error("Failed to upload object to S3: bucket=%s key=%s error=%s", self.bucket, key, self._format_s3_error(exc, operation="PutObject"))
+            detail = self._format_s3_error(exc, operation="PutObject")
+            logger.error("Failed to upload object to S3: bucket=%s key=%s error=%s", self.bucket, key, detail)
+            if self.local_fallback_enabled:
+                logger.warning(
+                    "Falling back to local storage for upload: bucket=%s key=%s reason=%s",
+                    self.bucket,
+                    key,
+                    detail,
+                )
+                return self._store_local_file(content, filename, owner_id, folder_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="File upload to S3 failed",
+                detail=detail,
             ) from exc
 
     def build_key(self, owner_id: str, filename: str, folder_id: str | None = None, prefix: str = "uploads") -> str:
@@ -326,43 +384,34 @@ class S3Service:
         expires_in: int = 3600,
     ) -> dict:
         if not self.bucket or not self._ensure_s3_ready():
-            # Provide a local fallback so callers can still proceed
-            local_url = self._store_local_file(b"", filename, owner_id, folder_id)
-            return {
-                "upload_url": None,
-                "file_url": local_url,
-                "key": local_url,
-                "warning": "S3 unavailable; using local upload fallback.",
-            }
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=self._s3_unavailable_detail(),
+            )
 
         key = self.build_key(owner_id=owner_id, filename=filename, folder_id=folder_id, prefix="uploads")
 
-        def _create() -> str:
+        def _create(include_acl: bool) -> str:
             assert self.client is not None
             params = {
                 "Bucket": self.bucket,
                 "Key": key,
                 "ContentType": content_type,
-                "ACL": "public-read",
             }
-            return self.client.generate_presigned_url(
-                "put_object",
-                Params=params,
-                ExpiresIn=expires_in,
-            )
+            if include_acl:
+                params["ACL"] = "public-read"
+            return self.client.generate_presigned_url("put_object", Params=params, ExpiresIn=expires_in)
 
         try:
-            upload_url = await to_thread.run_sync(_create)
+            upload_url = await to_thread.run_sync(lambda: self._run_with_optional_acl_retry("PutObject", _create))
             return {"upload_url": upload_url, "file_url": self._public_url(key), "key": key}
         except Exception as exc:
-            logger.error("Failed to create presigned PUT URL, falling back to local: %s", self._format_s3_error(exc, "put_object"))
-            local_url = self._store_local_file(b"", filename, owner_id, folder_id)
-            return {
-                "upload_url": None,
-                "file_url": local_url,
-                "key": key,
-                "warning": "S3 unavailable; using local upload fallback.",
-            }
+            detail = self._format_s3_error(exc, "PutObject")
+            logger.error("Failed to create presigned PUT URL: bucket=%s key=%s error=%s", self.bucket, key, detail)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=detail,
+            ) from exc
 
     async def get_presigned_get_url(self, key: str, expires_in: int = 3600) -> str:
         if not self.bucket or not self._ensure_s3_ready():
@@ -398,19 +447,24 @@ class S3Service:
 
         key = self.build_key(owner_id=owner_id, filename=filename, folder_id=folder_id, prefix="uploads")
 
-        def _start() -> str:
+        def _start(include_acl: bool) -> str:
             assert self.client is not None
-            response = self.client.create_multipart_upload(Bucket=self.bucket, Key=key, **self._multipart_upload_args(content_type))
+            response = self.client.create_multipart_upload(
+                Bucket=self.bucket,
+                Key=key,
+                **self._multipart_upload_args(content_type, include_acl=include_acl),
+            )
             return response["UploadId"]
 
         try:
-            upload_id = await to_thread.run_sync(_start)
+            upload_id = await to_thread.run_sync(lambda: self._run_with_optional_acl_retry("CreateMultipartUpload", _start))
             return {"upload_id": upload_id, "key": key, "file_url": self._public_url(key)}
         except Exception as exc:
-            logger.error("Failed to start multipart upload: bucket=%s key=%s error=%s", self.bucket, key, self._format_s3_error(exc, "CreateMultipartUpload"))
+            detail = self._format_s3_error(exc, "CreateMultipartUpload")
+            logger.error("Failed to start multipart upload: bucket=%s key=%s error=%s", self.bucket, key, detail)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Could not start multipart upload",
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=detail,
             ) from exc
 
     async def get_multipart_part_url(self, key: str, upload_id: str, part_number: int, expires_in: int = 3600) -> str:
@@ -529,7 +583,11 @@ class S3Service:
                 _ = Image  # keep optional import local without lint churn
                 return self._upload_thumbnail_bytes(self._render_image_thumbnail_bytes(content), thumb_key)
 
-            return await to_thread.run_sync(_thumb_image)
+            try:
+                return await to_thread.run_sync(_thumb_image)
+            except Exception as exc:
+                logger.warning("Failed to create image thumbnail: owner_id=%s error=%s", owner_id, self._format_s3_error(exc, "PutObject"))
+                return None
 
         if mime.startswith("video/"):
             ffmpeg_bin = os.getenv("FFMPEG_PATH", "ffmpeg")
@@ -545,7 +603,11 @@ class S3Service:
                     if tmp_in.exists():
                         tmp_in.unlink(missing_ok=True)
 
-            return await to_thread.run_sync(_thumb_video)
+            try:
+                return await to_thread.run_sync(_thumb_video)
+            except Exception as exc:
+                logger.warning("Failed to create video thumbnail: owner_id=%s error=%s", owner_id, self._format_s3_error(exc, "PutObject"))
+                return None
 
         return None
 
@@ -560,33 +622,41 @@ class S3Service:
         if not (mime.startswith("image/") or mime.startswith("video/")):
             return None
 
-        if self._is_local_upload(storage_path):
-            local_path = self._local_upload_path(storage_path)
-            if not local_path.exists():
-                return None
-            content = await to_thread.run_sync(local_path.read_bytes)
-            return await self.create_thumbnail(content, mime, owner_id, folder_id)
-
-        if not self.enabled or not self.client:
-            return None
-
-        object_key = self._extract_key(storage_path)
-
-        if mime.startswith("image/"):
-            def _download_image() -> bytes:
-                assert self.client is not None
-                response = self.client.get_object(Bucket=self.bucket, Key=object_key)
-                return response["Body"].read()
-
-            content = await to_thread.run_sync(_download_image)
-            return await self.create_thumbnail(content, mime, owner_id, folder_id)
-
-        ffmpeg_bin = os.getenv("FFMPEG_PATH", "ffmpeg")
-        thumb_key = f"thumbnails/{owner_id}/{folder_id or 'root'}/{uuid4().hex}.jpg"
-
         try:
+            if self._is_local_upload(storage_path):
+                local_path = self._local_upload_path(storage_path)
+                if not local_path.exists():
+                    return None
+                content = await to_thread.run_sync(local_path.read_bytes)
+                return await self.create_thumbnail(content, mime, owner_id, folder_id)
+
+            if not self.enabled or not self.client:
+                return None
+
+            object_key = self._extract_key(storage_path)
+
+            if mime.startswith("image/"):
+                def _download_image() -> bytes:
+                    assert self.client is not None
+                    response = self.client.get_object(Bucket=self.bucket, Key=object_key)
+                    return response["Body"].read()
+
+                content = await to_thread.run_sync(_download_image)
+                return await self.create_thumbnail(content, mime, owner_id, folder_id)
+
+            ffmpeg_bin = os.getenv("FFMPEG_PATH", "ffmpeg")
+            thumb_key = f"thumbnails/{owner_id}/{folder_id or 'root'}/{uuid4().hex}.jpg"
+
             source_url = await self.get_presigned_get_url(object_key)
         except HTTPException:
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Failed to prepare thumbnail from storage: owner_id=%s storage_path=%s error=%s",
+                owner_id,
+                storage_path,
+                self._format_s3_error(exc, "GetObject"),
+            )
             return None
 
         return await to_thread.run_sync(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 from datetime import datetime
+from io import BytesIO
 import logging
+import mimetypes
 from pathlib import Path
 from uuid import uuid4
 
@@ -94,6 +96,59 @@ class MessageResponse(BaseModel):
 
 class ProfilePhotoResponse(BaseModel):
     profile_picture: str
+
+
+def _guess_image_mime_type(filename: str | None) -> str | None:
+    guessed_type, _ = mimetypes.guess_type(filename or "")
+    if guessed_type and guessed_type.startswith("image/"):
+        return guessed_type
+    return None
+
+
+def _resolve_profile_photo_content_type(file: UploadFile, content: bytes) -> str:
+    declared_type = str(file.content_type or "").strip().lower()
+    guessed_type = _guess_image_mime_type(file.filename)
+
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        if declared_type.startswith("image/"):
+            return declared_type
+        if guessed_type:
+            return guessed_type
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image uploads are allowed")
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            detected_type = Image.MIME.get(image.format or "", "")
+            image.verify()
+    except Exception as exc:
+        logger.warning(
+            "Rejected non-image profile upload: filename=%s content_type=%s error=%s",
+            getattr(file, "filename", None),
+            getattr(file, "content_type", None),
+            exc,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image uploads are allowed") from exc
+
+    detected_type = str(detected_type or "").strip().lower()
+    if detected_type.startswith("image/"):
+        return detected_type
+    if declared_type.startswith("image/"):
+        return declared_type
+    if guessed_type:
+        return guessed_type
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image uploads are allowed")
+
+
+def _resolve_profile_photo_suffix(filename: str | None, content_type: str) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix:
+        return suffix
+    guessed_suffix = mimetypes.guess_extension(content_type or "")
+    if guessed_suffix == ".jpe":
+        return ".jpg"
+    return guessed_suffix or ".jpg"
 
 
 def _to_photo_url(value: str | None, request: Request | None = None) -> str | None:
@@ -231,21 +286,19 @@ async def upload_profile_photo(
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> ProfilePhotoResponse:
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image uploads are allowed")
-
     content = await file.read()
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image is empty")
 
-    suffix = Path(file.filename or "").suffix.lower() or ".jpg"
+    content_type = _resolve_profile_photo_content_type(file, content)
+    suffix = _resolve_profile_photo_suffix(file.filename, content_type)
     safe_name = f"{current_user['_id']}-{uuid4().hex}{suffix}"
 
     try:
         if config.AWS_S3_BUCKET:
             photo_url = await s3_service.upload_bytes(
                 content=content,
-                content_type=file.content_type,
+                content_type=content_type,
                 filename=safe_name,
                 owner_id=str(current_user["_id"]),
             )

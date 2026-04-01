@@ -51,6 +51,25 @@ def _normalize_registration_identity(payload: RegisterRequest) -> tuple[str, str
     return normalized_email, normalized_username, normalized_password
 
 
+async def _resolve_unique_username(
+    db: AsyncIOMotorDatabase,
+    base_username: str,
+    *,
+    exclude_user_id: object | None = None,
+) -> str:
+    resolved_username = base_username
+    suffix = 0
+
+    while True:
+        query: dict[str, object] = {"username": resolved_username}
+        if exclude_user_id is not None:
+            query["_id"] = {"$ne": exclude_user_id}
+        if not await db.users.find_one(query):
+            return resolved_username
+        suffix += 1
+        resolved_username = f"{base_username}{suffix}"
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -60,6 +79,8 @@ async def register(
 ) -> RegisterResponse:
     logger.info("Register API called")
     normalized_email, normalized_username, normalized_password = _normalize_registration_identity(payload)
+    now = datetime.utcnow()
+    dob_value = payload.date_of_birth.isoformat()
 
     existing_email_user = await db.users.find_one({"email": normalized_email})
     if existing_email_user:
@@ -67,14 +88,30 @@ async def register(
             existing_email_user.get("is_email_verified", existing_email_user.get("is_verified", False))
         )
         if not is_verified:
+            existing_mobile_user = await db.users.find_one({"mobile_number": payload.mobile_number})
+            if existing_mobile_user and existing_mobile_user["_id"] != existing_email_user["_id"]:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Mobile number already in use")
+
+            resolved_username = await _resolve_unique_username(
+                db,
+                normalized_username,
+                exclude_user_id=existing_email_user["_id"],
+            )
             await db.users.update_one(
                 {"_id": existing_email_user["_id"]},
                 {
                     "$set": {
-                        "is_active": True,
-                        "is_verified": True,
-                        "is_email_verified": True,
-                        "updated_at": datetime.utcnow(),
+                        "full_name": payload.full_name,
+                        "date_of_birth": dob_value,
+                        "dob": dob_value,
+                        "mobile_number": payload.mobile_number,
+                        "phone_number": payload.mobile_number,
+                        "username": resolved_username,
+                        "password_hash": hash_password(normalized_password),
+                        "is_active": False,
+                        "is_verified": False,
+                        "is_email_verified": False,
+                        "updated_at": now,
                     }
                 },
             )
@@ -83,26 +120,24 @@ async def register(
             background_tasks.add_task(send_otp_email, normalized_email, otp)
             logger.info("OTP email queued for registration resend: email=%s", normalized_email)
             response.status_code = status.HTTP_200_OK
-            return RegisterResponse(message="Registration successful", email=normalized_email)
+            return RegisterResponse(
+                message="Registration pending. Please verify the OTP sent to your email.",
+                email=normalized_email,
+            )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already registered")
 
     existing_mobile_user = await db.users.find_one({"mobile_number": payload.mobile_number})
     if existing_mobile_user:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Mobile number already in use")
 
-    resolved_username = normalized_username
-    suffix = 0
-    while await db.users.find_one({"username": resolved_username}):
-        suffix += 1
-        resolved_username = f"{normalized_username}{suffix}"
+    resolved_username = await _resolve_unique_username(db, normalized_username)
 
-    now = datetime.utcnow()
     default_plan = build_plan_update("free")
     await db.users.insert_one(
         {
             "full_name": payload.full_name,
-            "date_of_birth": payload.date_of_birth.isoformat(),
-            "dob": payload.date_of_birth.isoformat(),
+            "date_of_birth": dob_value,
+            "dob": dob_value,
             "email": normalized_email,
             "mobile_number": payload.mobile_number,
             "phone_number": payload.mobile_number,
@@ -119,9 +154,9 @@ async def register(
             "last_login": None,
             "password_hash": hash_password(normalized_password),
             "role": "user",
-            "is_active": True,
-            "is_verified": True,
-            "is_email_verified": True,
+            "is_active": False,
+            "is_verified": False,
+            "is_email_verified": False,
             "is_2fa_enabled": False,
             "auth_notifications_enabled": True,
             "created_at": now,
@@ -133,21 +168,32 @@ async def register(
     otp = await otp_service.create_otp(normalized_email, "register")
     background_tasks.add_task(send_otp_email, normalized_email, otp)
     logger.info("OTP email queued for registration: email=%s", normalized_email)
-    return RegisterResponse(message="Registration successful", email=normalized_email)
+    return RegisterResponse(
+        message="Registration pending. Please verify the OTP sent to your email.",
+        email=normalized_email,
+    )
 
 
 @router.post("/verify-otp", response_model=MessageResponse)
 async def verify_otp(payload: VerifyOtpRequest, db: AsyncIOMotorDatabase = Depends(get_database)) -> MessageResponse:
+    normalized_email = str(payload.email).strip().lower()
     purpose = payload.purpose.lower()
     otp_service = OTPService(db)
-    valid = await otp_service.verify_otp(payload.email, purpose, payload.otp_code)
+    valid = await otp_service.verify_otp(normalized_email, purpose, payload.otp_code)
     if not valid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
 
     if purpose == "register":
         await db.users.update_one(
-            {"email": payload.email},
-            {"$set": {"is_active": True, "is_verified": True, "updated_at": datetime.utcnow()}},
+            {"email": normalized_email},
+            {
+                "$set": {
+                    "is_active": True,
+                    "is_verified": True,
+                    "is_email_verified": True,
+                    "updated_at": datetime.utcnow(),
+                }
+            },
         )
     return MessageResponse(message="OTP verified successfully")
 
@@ -186,24 +232,18 @@ async def login(payload: dict[str, str], db: AsyncIOMotorDatabase = Depends(get_
     if not password_valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    if (
-        not user.get("is_active", False)
-        or not user.get("is_verified", False)
-        or not user.get("is_email_verified", user.get("is_verified", False))
-    ):
-        await db.users.update_one(
-            {"_id": user["_id"]},
-            {
-                "$set": {
-                    "is_active": True,
-                    "is_verified": True,
-                    "is_email_verified": True,
-                    "updated_at": datetime.utcnow(),
-                }
-            },
+    is_email_verified = bool(user.get("is_email_verified", user.get("is_verified", False)))
+    is_verified = bool(user.get("is_verified", False))
+    is_active = bool(user.get("is_active", False))
+
+    if not is_verified or not is_email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please verify your email with OTP before logging in",
         )
-        user = await db.users.find_one({"_id": user["_id"]})
-        assert user is not None
+
+    if not is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
 
     try:
         access_token = create_access_token(

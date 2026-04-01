@@ -2,12 +2,16 @@ import { clearAuthTokens, getAccessToken, getRefreshToken, setAuthTokens } from 
 import { toast } from './popup'
 import { normalizeStoragePayload } from './storage'
 
-export const BASE_URL = 'https://cloud-drive-l02z.onrender.com'
+const configuredBaseUrl = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '')
+export const BASE_URL = configuredBaseUrl || (import.meta.env.DEV
+  ? 'http://127.0.0.1:8000'
+  : 'https://cloud-drive-l02z.onrender.com')
 export const CHUNK_SIZE = 5 * 1024 * 1024
 
 const MULTIPART_THRESHOLD = 25 * 1024 * 1024
 const MAX_RESUMABLE_FILE_SIZE = 10 * 1024 * 1024 * 1024
 const UPLOAD_SESSIONS_STORAGE_KEY = 'drive.multipart-upload-sessions'
+const MONGO_OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i
 let refreshRequest = null
 
 function createApiError(message, status = null, options = {}) {
@@ -159,8 +163,20 @@ function writeUploadSessions(sessions) {
   window.localStorage.setItem(UPLOAD_SESSIONS_STORAGE_KEY, JSON.stringify(sessions))
 }
 
+function normalizeUploadFolderId(folderId) {
+  const value = String(folderId ?? '').trim()
+  if (!value) return null
+
+  const normalized = value.toLowerCase()
+  if (['null', 'undefined', 'root', 'drive', 'my-drive'].includes(normalized)) {
+    return null
+  }
+
+  return MONGO_OBJECT_ID_PATTERN.test(value) ? value : null
+}
+
 function buildUploadFingerprint(file, folderId) {
-  return [folderId || 'root', file.name, file.size, file.lastModified].join(':')
+  return [normalizeUploadFolderId(folderId) || 'root', file.name, file.size, file.lastModified].join(':')
 }
 
 function getStoredUploadSession(file, folderId) {
@@ -337,13 +353,27 @@ function normalizeProfileResponse(profile) {
 
 function uploadDirectFile(file, folderId = null, onProgress) {
   return new Promise((resolve, reject) => {
+    if (!file) {
+      reject(createApiError('No file selected for upload.'))
+      return
+    }
+    if (!String(file.name || '').trim()) {
+      reject(createApiError('Filename is required.'))
+      return
+    }
+    if (Number(file.size || 0) <= 0) {
+      reject(createApiError('File is empty. Choose a file with content before uploading.'))
+      return
+    }
+
     const token = getRequestToken(true)
     const formData = new FormData()
     const xhr = new XMLHttpRequest()
+    const normalizedFolderId = normalizeUploadFolderId(folderId)
 
     formData.append('file', file)
-    if (folderId) {
-      formData.append('folder_id', folderId)
+    if (normalizedFolderId) {
+      formData.append('folder_id', normalizedFolderId)
     }
 
     xhr.open('POST', resolveApiUrl('/api/files/upload'))
@@ -379,6 +409,17 @@ function uploadDirectFile(file, folderId = null, onProgress) {
       }
 
       const message = data?.detail || data?.message || 'File upload failed'
+
+      if (import.meta.env.DEV) {
+        console.error('Direct upload failed', {
+          status: xhr.status,
+          message,
+          filename: file.name,
+          size: file.size,
+          folderId: normalizedFolderId,
+          response: data,
+        })
+      }
 
       if (xhr.status === 401) {
         reject(handleUnauthorized(message))
@@ -439,25 +480,27 @@ function uploadBlobToPresignedUrl(uploadUrl, blob, contentType, onProgress) {
 }
 
 async function uploadMultipartFile(file, folderId = null, onProgress) {
+  const normalizedFolderId = normalizeUploadFolderId(folderId)
+
   if (file.size > MAX_RESUMABLE_FILE_SIZE) {
     throw new Error('Files larger than 10 GB are not supported yet.')
   }
 
   const totalParts = Math.max(1, Math.ceil(file.size / CHUNK_SIZE))
   const contentType = file.type || 'application/octet-stream'
-  let uploadSession = getStoredUploadSession(file, folderId)
+  let uploadSession = getStoredUploadSession(file, normalizedFolderId)
   let uploadStatus = null
 
   if (uploadSession?.uploadId) {
     try {
       uploadStatus = await request(`/api/files/multipart/status/${uploadSession.uploadId}`, { method: 'GET' }, true)
       if (uploadStatus?.status === 'completed') {
-        clearStoredUploadSession(file, folderId)
+        clearStoredUploadSession(file, normalizedFolderId)
         uploadSession = null
         uploadStatus = null
       }
     } catch {
-      clearStoredUploadSession(file, folderId)
+      clearStoredUploadSession(file, normalizedFolderId)
       uploadSession = null
       uploadStatus = null
     }
@@ -469,7 +512,7 @@ async function uploadMultipartFile(file, folderId = null, onProgress) {
       body: JSON.stringify({
         filename: file.name,
         content_type: contentType,
-        folder_id: folderId,
+        folder_id: normalizedFolderId,
         file_size: file.size,
         total_parts: totalParts,
       }),
@@ -481,7 +524,7 @@ async function uploadMultipartFile(file, folderId = null, onProgress) {
       fileUrl: started.file_url,
       totalParts,
     }
-    setStoredUploadSession(file, folderId, uploadSession)
+    setStoredUploadSession(file, normalizedFolderId, uploadSession)
     uploadStatus = {
       uploaded_parts: [],
       total_parts: totalParts,
@@ -584,12 +627,12 @@ async function uploadMultipartFile(file, folderId = null, onProgress) {
         filename: file.name,
         mime_type: contentType,
         file_size: file.size,
-        folder_id: folderId,
+        folder_id: normalizedFolderId,
         parts: sortedParts,
       }),
     }, true)
 
-    clearStoredUploadSession(file, folderId)
+    clearStoredUploadSession(file, normalizedFolderId)
     emitUploadProgress(onProgress, {
       progress: 100,
       uploadedBytes: file.size,
@@ -599,7 +642,7 @@ async function uploadMultipartFile(file, folderId = null, onProgress) {
     })
     return completed
   } catch (error) {
-    setStoredUploadSession(file, folderId, uploadSession)
+    setStoredUploadSession(file, normalizedFolderId, uploadSession)
     throw error
   }
 }

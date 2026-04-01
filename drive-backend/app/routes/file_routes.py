@@ -182,7 +182,9 @@ async def _try_get_current_user_from_authorization(
 def _resolve_file_url(request: Request, storage_path: str | None) -> str:
     file_url = storage_path or ""
     if file_url and not str(file_url).startswith(("http://", "https://", "mock://")):
-        if config.AWS_S3_BUCKET:
+        if str(file_url).startswith("/uploads/"):
+            file_url = f"{str(request.base_url).rstrip('/')}/{file_url.lstrip('/')}"
+        elif config.AWS_S3_BUCKET:
             file_url = f"https://{config.AWS_S3_BUCKET}.s3.{config.AWS_REGION}.amazonaws.com/{file_url}"
         else:
             file_url = f"{str(request.base_url).rstrip('/')}/{file_url.lstrip('/')}"
@@ -331,6 +333,17 @@ def _build_search_type_query(file_type: str | None) -> dict | None:
     return {"tags": {"$regex": normalized, "$options": "i"}}
 
 
+def _normalize_optional_folder_id(value, detail: str = "Invalid folder id"):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {"null", "undefined", "root", "drive", "my-drive"}:
+            return None
+        return parse_object_id(normalized, detail)
+    return value
+
+
 @router.post("/upload", response_model=FileResponse)
 async def upload_file(
     file: UploadFile = File(...),
@@ -342,7 +355,7 @@ async def upload_file(
     thumbnail_url: str | None = None
 
     try:
-        if file is None or not isinstance(file, UploadFile):
+        if file is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No file uploaded")
 
         filename = (file.filename or "").strip()
@@ -363,7 +376,7 @@ async def upload_file(
 
         await ensure_storage_capacity(db, current_user, file_size)
 
-        parsed_folder_id = parse_object_id(folder_id, "Invalid folder id") if folder_id else None
+        parsed_folder_id = _normalize_optional_folder_id(folder_id, "Invalid folder id")
         if parsed_folder_id:
             folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
             await ensure_folder_write_access(db, folder, current_user)
@@ -393,7 +406,7 @@ async def upload_file(
             owner_id=str(current_user["_id"]),
             folder_id=str(parsed_folder_id) if parsed_folder_id else None,
         )
-        s3_key = s3_service.extract_key(file_url) if s3_service.enabled and file_url else None
+        s3_key = None if s3_service.is_local_upload(file_url) else s3_service.extract_key(file_url)
 
         try:
             thumbnail_url = await s3_service.create_thumbnail(
@@ -429,7 +442,7 @@ async def upload_file(
             doc["_id"],
             file_url,
             file_size,
-            "s3" if s3_service.enabled else "local",
+            "local" if s3_service.is_local_upload(file_url) else "s3",
         )
         return serialize_file(doc)
     except HTTPException as exc:
@@ -524,7 +537,7 @@ async def upload_folder(
                 owner_id=str(current_user["_id"]),
                 folder_id=str(folder_id),
             )
-            s3_key = s3_service.extract_key(file_url) if s3_service.enabled else None
+            s3_key = None if s3_service.is_local_upload(file_url) else s3_service.extract_key(file_url)
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"File upload failed: {exc}") from exc
         thumbnail_url = await s3_service.create_thumbnail(
@@ -599,7 +612,7 @@ async def get_upload_url(
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
-    parsed_folder_id = parse_object_id(payload.folder_id, "Invalid folder id") if payload.folder_id else None
+    parsed_folder_id = _normalize_optional_folder_id(payload.folder_id, "Invalid folder id")
     if parsed_folder_id:
         folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
         await ensure_folder_write_access(db, folder, current_user)
@@ -621,7 +634,7 @@ async def complete_direct_upload(
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> FileResponse:
     await ensure_storage_capacity(db, current_user, max(int(payload.file_size or 0), 0))
-    parsed_folder_id = parse_object_id(payload.folder_id, "Invalid folder id") if payload.folder_id else None
+    parsed_folder_id = _normalize_optional_folder_id(payload.folder_id, "Invalid folder id")
     if parsed_folder_id:
         folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
         await ensure_folder_write_access(db, folder, current_user)
@@ -647,7 +660,7 @@ async def complete_direct_upload(
             folder_id=parsed_folder_id,
             file_url=file_url,
             thumbnail_url=thumbnail_url,
-            s3_key=payload.key,
+            s3_key=None if s3_service.is_local_upload(file_url) else payload.key,
         )
         await _recalc_storage(db, current_user["_id"])
         await _log_activity(db, current_user["_id"], "upload", doc["_id"], {"source": "presigned"})
@@ -668,7 +681,7 @@ async def start_multipart_upload(
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     await ensure_storage_capacity(db, current_user, max(int(payload.file_size or 0), 0))
-    parsed_folder_id = parse_object_id(payload.folder_id, "Invalid folder id") if payload.folder_id else None
+    parsed_folder_id = _normalize_optional_folder_id(payload.folder_id, "Invalid folder id")
     if parsed_folder_id:
         folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
         await ensure_folder_write_access(db, folder, current_user)
@@ -798,7 +811,10 @@ async def complete_multipart_upload(
     final_size = max(int(payload.file_size or doc.get("file_size", 0) or 0), 0)
     await ensure_storage_capacity(db, current_user, final_size)
 
-    parsed_folder_id = parse_object_id(payload.folder_id, "Invalid folder id") if payload.folder_id else doc.get("folder_id")
+    parsed_folder_id = _normalize_optional_folder_id(
+        payload.folder_id if payload.folder_id is not None else doc.get("folder_id"),
+        "Invalid folder id",
+    )
     if parsed_folder_id:
         folder = await db.folders.find_one({"_id": parsed_folder_id, "is_deleted": {"$ne": True}})
         await ensure_folder_write_access(db, folder, current_user)
@@ -828,7 +844,7 @@ async def complete_multipart_upload(
             folder_id=parsed_folder_id,
             file_url=file_url,
             thumbnail_url=thumbnail_url,
-            s3_key=payload.key,
+            s3_key=None if s3_service.is_local_upload(file_url) else payload.key,
         )
         await db.uploads.update_one(
             {"upload_id": payload.upload_id, "user_id": current_user["_id"]},

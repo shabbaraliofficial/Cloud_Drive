@@ -68,6 +68,10 @@ def _resolve_admin_file_url(request: Request | None, file_doc: dict) -> str | No
         return None
     if str(file_url).startswith(("http://", "https://", "mock://")):
         return str(file_url)
+    if str(file_url).startswith("/uploads/"):
+        if request is None:
+            return str(file_url)
+        return f"{str(request.base_url).rstrip('/')}/{str(file_url).lstrip('/')}"
     if config.AWS_S3_BUCKET:
         return f"https://{config.AWS_S3_BUCKET}.s3.{config.AWS_REGION}.amazonaws.com/{str(file_url).lstrip('/')}"
     if request is None:

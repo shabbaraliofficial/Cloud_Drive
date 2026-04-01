@@ -69,11 +69,15 @@ function UploadManager({ currentFolderId, onUploaded }) {
       )))
       return true
     } catch (error) {
+      const detail = error?.message || 'Upload failed'
       setUploadQueue((prev) => prev.map((item) => (
         item.id === queueId
-          ? { ...item, status: 'error', detail: error?.message || 'Upload failed' }
+          ? { ...item, status: 'error', detail }
           : item
       )))
+      toast.error(detail, {
+        title: 'Upload failed',
+      })
       return false
     }
   }
@@ -102,7 +106,7 @@ function UploadManager({ currentFolderId, onUploaded }) {
     }
 
     if (failureCount > 0) {
-      toast.error(failureCount === 1 ? 'Upload failed' : `${failureCount} uploads failed`)
+      toast.error(failureCount === 1 ? 'One upload failed' : `${failureCount} uploads failed`)
     }
   }
 
